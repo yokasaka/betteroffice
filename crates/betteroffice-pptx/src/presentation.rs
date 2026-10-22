@@ -511,6 +511,19 @@ impl Presentation {
         Ok(self.renderer.register_font(family, bold, italic, bytes)?)
     }
 
+    /// Registers a face drawn only where a run's own face has no glyph.
+    pub fn register_fallback_font(
+        &mut self,
+        family: &str,
+        bold: bool,
+        italic: bool,
+        bytes: &[u8],
+    ) -> Result<u32> {
+        Ok(self
+            .renderer
+            .register_fallback_font(family, bold, italic, bytes)?)
+    }
+
     #[cfg(feature = "raster")]
     pub(crate) fn renderer(&self) -> &SlideRenderer {
         &self.renderer

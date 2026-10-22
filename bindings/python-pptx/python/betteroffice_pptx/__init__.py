@@ -511,6 +511,19 @@ class Presentation:
         """Switch comment systems. Only legal while the deck has no comments."""
         return self._inner.set_comment_flavor(flavor)
 
+    def register_fallback_font(
+        self,
+        family: str,
+        data: "bytes | bytearray | memoryview",
+        *,
+        bold: bool = False,
+        italic: bool = False,
+    ) -> int:
+        """Register a face drawn only where a run's own face has no glyph."""
+        return self._inner.register_fallback_font(
+            family, _as_bytes(data), bold=bold, italic=italic
+        )
+
     def register_font(
         self,
         family: str,
