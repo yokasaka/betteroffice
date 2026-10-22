@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
@@ -7,9 +8,9 @@ use ooxml_drawingml::{
     ShapeFill, ShapeOutline, ShapeStyle, StyleReference, TableCellBorder,
     TableCellBorders as StyleCellBorders, TableCellPosition, TableCellStyle, TableStyle,
     TableStyleFlags, Theme, ThemeFormatScheme, get_theme_color, normalize_table_column_widths,
-    preset_geometry_to_path, resolve_color_value_to_hex_with_theme,
-    resolve_color_value_to_rgba_hex, resolve_theme_font_ref, style_effects, style_fill,
-    style_outline, style_reference_color,
+    preset_geometry_default_adjustments, preset_geometry_to_path,
+    resolve_color_value_to_hex_with_theme, resolve_color_value_to_rgba_hex, resolve_theme_font_ref,
+    style_effects, style_fill, style_outline, style_reference_color,
 };
 use ooxml_text::{
     CompatFlags, FontId, FontStore, ShapeFeature, ShapedGlyph, WORD_SMALL_CAPS_ADVANCE_SCALE,
@@ -1003,6 +1004,16 @@ impl<'a> LayoutBuilder<'a> {
             self.master
                 .and_then(|master| find_placeholder(&master.shapes, placeholder))
         });
+        let geometry_master = shape.placeholder.as_ref().and_then(|placeholder| {
+            let mut target = layout_node
+                .and_then(|node| node_base(node).placeholder.as_ref())
+                .unwrap_or(placeholder)
+                .clone();
+            target.index = None;
+            self.master
+                .and_then(|master| find_placeholder(&master.shapes, &target))
+        });
+        let geometry = resolved_shape_geometry(shape, original, layout_node, geometry_master);
         let resolved = resolved_transform_value(shape, original, layout_node, master_node);
         let rect = space.map_transform(&resolved);
         if shape.kind == ShapeKind::Group {
@@ -1082,13 +1093,13 @@ impl<'a> LayoutBuilder<'a> {
         };
         match shape.kind {
             ShapeKind::Shape => {
-                let paths = custom_paths(original);
+                let paths = geometry.paths;
                 let (path, mut geometry_fallback) = geometry_path_with_fallback(
-                    &shape.geometry,
-                    &shape.adjust_values,
+                    geometry.name,
+                    &geometry.adjust_values,
                     f64::from(rect.w) / f64::from(rect.h),
                 );
-                if shape.geometry == "custom" && !paths.is_empty() {
+                if geometry.name == "custom" && !paths.is_empty() {
                     geometry_fallback = false;
                 }
                 let primitive = Primitive::Shape {
@@ -1101,10 +1112,10 @@ impl<'a> LayoutBuilder<'a> {
                     y: rect.y,
                     w: rect.w,
                     h: rect.h,
-                    geometry: shape.geometry.clone(),
+                    geometry: geometry.name.to_owned(),
                     path,
                     geometry_fallback,
-                    adjust_values: shape
+                    adjust_values: geometry
                         .adjust_values
                         .iter()
                         .map(|(name, value)| (name.clone(), *value as f32))
@@ -1185,7 +1196,7 @@ impl<'a> LayoutBuilder<'a> {
                 rect,
                 transform,
                 space,
-                geometry_text_inset(original, rect),
+                geometry_text_inset(geometry.source, rect),
                 content,
                 body_cascade,
             )?)
@@ -5874,6 +5885,59 @@ fn slide_background_path(
             GeometryPathCommand::Close => GeometryPathCommand::Close,
         })
         .collect()
+}
+
+struct ShapeGeometry<'a> {
+    name: &'a str,
+    adjust_values: Cow<'a, BTreeMap<String, f64>>,
+    paths: &'a [CustomGeometryPath],
+    source: Option<&'a ShapeNode>,
+}
+
+fn resolved_shape_geometry<'a>(
+    shape: &'a ShapeSnapshot,
+    original: Option<&'a ShapeNode>,
+    layout: Option<&'a ShapeNode>,
+    master: Option<&'a ShapeNode>,
+) -> ShapeGeometry<'a> {
+    let explicit = |source: &pptx_parse::Shape| {
+        source.has_preset_geometry || source.geometry != "rect" || !source.paths.is_empty()
+    };
+    let inherited = match original {
+        Some(ShapeNode::Shape(source))
+            if !explicit(source) && shape.geometry == source.geometry =>
+        {
+            [layout, master]
+                .into_iter()
+                .flatten()
+                .find_map(|node| match node {
+                    ShapeNode::Shape(source) if explicit(source) => Some((node, source)),
+                    _ => None,
+                })
+        }
+        _ => None,
+    };
+    match inherited {
+        Some((node, source)) => {
+            let mut adjustments: BTreeMap<_, _> =
+                preset_geometry_default_adjustments(&source.geometry)
+                    .into_iter()
+                    .collect();
+            adjustments.extend(source.adjust_values.clone());
+            ShapeGeometry {
+                name: &source.geometry,
+                adjust_values: Cow::Owned(adjustments),
+                paths: &source.paths,
+                source: Some(node),
+            }
+        }
+        None => ShapeGeometry {
+            name: &shape.geometry,
+            adjust_values: Cow::Borrowed(&shape.adjust_values),
+            paths: custom_paths(original),
+            source: original,
+        },
+    }
 }
 
 fn custom_paths(shape: Option<&ShapeNode>) -> &[CustomGeometryPath] {
