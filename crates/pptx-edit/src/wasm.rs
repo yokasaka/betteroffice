@@ -257,6 +257,15 @@ struct MoveShapeArgs {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct SetTableSizesArgs {
+    slide_id: String,
+    shape_id: String,
+    widths: Vec<i64>,
+    heights: Vec<i64>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ResizeShapeArgs {
     slide_id: String,
     shape_id: String,
@@ -1027,6 +1036,21 @@ impl PptxDocument {
     #[wasm_bindgen(js_name = moveShapeProfiledJson)]
     pub fn move_shape_profiled_json(&self, args: &str) -> Result<String, JsValue> {
         profiled(args, &mut performance_now, |args| self.move_shape(args))
+    }
+
+    #[wasm_bindgen(js_name = setTableSizesJson)]
+    pub fn set_table_sizes_json(&self, args: &str) -> Result<String, JsValue> {
+        let args: SetTableSizesArgs = parse_args(args)?;
+        self.session
+            .set_table_sizes(
+                &local_context(),
+                &args.slide_id,
+                &args.shape_id,
+                args.widths,
+                args.heights,
+            )
+            .map_err(js_error)?;
+        json(())
     }
 
     #[wasm_bindgen(js_name = resizeShapeJson)]

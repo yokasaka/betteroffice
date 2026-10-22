@@ -557,6 +557,26 @@ fn shape_patch(
     if shape.adjust_values != base.adjust_values {
         patch.adjust_values = Some(shape.adjust_values.clone());
     }
+    if let (
+        Some(pptx_parse::GraphicFrameData::Table(table)),
+        Some(pptx_parse::GraphicFrameData::Table(original)),
+    ) = (&shape.graphic, &base.graphic)
+    {
+        let heights: Vec<i64> = table.rows.iter().map(|row| row.height).collect();
+        let same_shape =
+            table.grid.len() == original.grid.len() && heights.len() == original.rows.len();
+        if same_shape && table.grid != original.grid
+            || same_shape
+                && heights
+                    != original
+                        .rows
+                        .iter()
+                        .map(|row| row.height)
+                        .collect::<Vec<_>>()
+        {
+            patch.table_sizes = Some((table.grid.clone(), heights));
+        }
+    }
     let baseline_stories: HashMap<&str, &StorySnapshot> = base
         .text_stories
         .iter()

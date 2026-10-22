@@ -166,6 +166,15 @@ export function prepareCommandOperation(handle: PresentationHandle, mutation: Pr
           /^[a-zA-Z][a-zA-Z0-9]*$/.test(key) && Number.isFinite(value) && Math.abs(value) <= 1e6)
         ? () => handle.setShapeAdjust(slide.id, shape.id, adjustments) : null;
     }
+    case 'setTableSizes': {
+      const table = shape.graphic as { type?: unknown; grid?: unknown; rows?: unknown } | null;
+      if (table?.type !== 'table' || !Array.isArray(table.grid) || !Array.isArray(table.rows)) return null;
+      const sizes = (value: unknown, count: number): value is number[] => Array.isArray(value) && value.length === count &&
+        value.every((entry) => Number.isSafeInteger(entry) && entry >= 0 && entry <= 51_206_400);
+      const [, , widths, heights] = args;
+      return sizes(widths, table.grid.length) && sizes(heights, table.rows.length) && widths.some((width) => width > 0)
+        ? () => handle.setTableSizes(slide.id, shape.id, widths, heights) : null;
+    }
     case 'removeShape': return () => handle.removeShape(slide.id, shape.id);
     case 'bringShapeToFront': return () => handle.bringShapeToFront(slide.id, shape.id);
     case 'sendShapeToBack': return () => handle.sendShapeToBack(slide.id, shape.id);

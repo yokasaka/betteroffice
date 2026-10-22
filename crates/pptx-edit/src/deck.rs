@@ -1100,6 +1100,79 @@ impl DeckSession {
         })
     }
 
+    pub fn set_table_sizes(
+        &self,
+        context: &EditCtx,
+        slide_id: &str,
+        shape_id: &str,
+        widths: Vec<i64>,
+        heights: Vec<i64>,
+    ) -> EditResult<()> {
+        for value in widths.iter().chain(&heights) {
+            validate_coordinate(*value)?;
+            if *value < 0 {
+                return Err(EditError::InvalidGeometry(
+                    "table sizes must not be negative".into(),
+                ));
+            }
+        }
+        let width = widths
+            .iter()
+            .try_fold(0i64, |a, b| a.checked_add(*b))
+            .filter(|width| *width > 0 && validate_coordinate(*width).is_ok())
+            .ok_or_else(|| EditError::InvalidGeometry("table width must be positive".into()))?;
+        let height = heights
+            .iter()
+            .try_fold(0i64, |a, b| a.checked_add(*b))
+            .filter(|height| validate_coordinate(*height).is_ok())
+            .ok_or_else(|| EditError::InvalidGeometry("table height overflow".into()))?;
+        let mut txn = self.transact_for(context);
+        require_shape_membership(&txn, slide_id, shape_id)?;
+        let shape = shape_ref(&txn, shape_id)?;
+        let Some(GraphicFrameData::Table(mut table)) = optional_json(&shape, &txn, "graphicJson")?
+        else {
+            return Err(EditError::InvalidGeometry("shape is not a table".into()));
+        };
+        if widths.len() != table.grid.len() || heights.len() != table.rows.len() {
+            return Err(EditError::InvalidGeometry(
+                "table size counts do not match".into(),
+            ));
+        }
+        let grown = |old: i64, before: i64, after: i64| {
+            old.checked_add(after - before)
+                .filter(|value| *value > 0 && validate_coordinate(*value).is_ok())
+                .unwrap_or(after.max(1))
+        };
+        let old_width = table.grid.iter().fold(0i64, |a, b| a.saturating_add(*b));
+        let old_height = table
+            .rows
+            .iter()
+            .fold(0i64, |a, row| a.saturating_add(row.height));
+        self.materialize_inherited(&mut txn, slide_id, &shape)?;
+        let frame = shape_rect(&shape, &txn)?;
+        table.grid = widths;
+        for (row, height) in table.rows.iter_mut().zip(heights) {
+            row.height = height;
+        }
+        insert_json(
+            &shape,
+            &mut txn,
+            "graphicJson",
+            Some(&GraphicFrameData::Table(table)),
+        )?;
+        shape.insert(
+            &mut txn,
+            "width",
+            grown(frame.width, old_width, width) as f64,
+        );
+        shape.insert(
+            &mut txn,
+            "height",
+            grown(frame.height, old_height, height) as f64,
+        );
+        Ok(())
+    }
+
     pub fn resize_shape(
         &self,
         context: &EditCtx,
@@ -1295,6 +1368,18 @@ fn validate_doc_impl(
         .collect();
     while let Some(shape) = shapes.pop() {
         shapes.extend(&shape.children);
+        if let Some(GraphicFrameData::Table(table)) = &shape.graphic
+            && table
+                .grid
+                .iter()
+                .chain(table.rows.iter().map(|row| &row.height))
+                .any(|value| *value < 0 || validate_coordinate(*value).is_err())
+        {
+            return Err(EditError::InvalidState(format!(
+                "table {} has a negative or oversized size",
+                shape.id
+            )));
+        }
         for story in &shape.text_stories {
             let text = stories
                 .get(&txn, &story.id)
