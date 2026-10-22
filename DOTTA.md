@@ -6,7 +6,9 @@ published to npm or PyPI: every build is a GitHub Release of this repository.
 
 ## Branches
 
-- `main` mirrors upstream `main` and carries no fork changes.
+- `main` stays at the fork's creation point and is never pushed. Pushing it would run
+  upstream's own workflows (`ci.yml`, `e2e.yml`, `release.yml`), which expect upstream's
+  runners and secrets. Read upstream through an `upstream` remote instead.
 - `dotta/main` is upstream plus a short stack of fork commits. Each one is a single commit
   whose subject ends in a label and whose body has a `Dotta-Patch:` line:
   - `TO-UPSTREAM`: meant for upstream, not sent yet.
@@ -18,7 +20,8 @@ the upstream base, and every release names it in its notes.
 
 ## Taking an upstream release
 
-1. `git fetch upstream` and fast-forward `main` to the upstream release commit.
+1. `git fetch upstream --tags` and pick the upstream release commit. Do not push it to this
+   fork's `main`.
 2. `git checkout -b dotta/rebase-<upstream version> dotta/main`, then
    `git rebase --onto <upstream commit> <old base>`; resolve conflicts commit by commit and
    keep one commit per change.
@@ -46,8 +49,9 @@ the upstream base, and every release names it in its notes.
   parts byte for byte, a layout ellipse drawn as an ellipse).
 
 Tool versions are pinned at the top of the workflow: Rust, bun, wasm-pack, maturin, Python,
-and binaryen through `.github/actions/wasm-toolchain`. Upstream's own workflows expect
-upstream's runners; disable them in this repository's Actions settings.
+and binaryen through `.github/actions/wasm-toolchain`. Upstream's own workflows stay
+unregistered here because `main` is never pushed; if one ever runs, disable it with
+`gh workflow disable`.
 
 ## Using a release from dotta
 
