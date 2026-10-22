@@ -13,6 +13,9 @@ for (const dir of packages) {
   const path = `${dir}/package.json`;
   const manifest = JSON.parse(await readFile(path, 'utf8'));
   manifest.version = version;
+  for (const name of Object.keys(manifest.dependencies ?? {})) {
+    if (name.startsWith('@betteroffice/pptx')) manifest.dependencies[name] = version;
+  }
   await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
