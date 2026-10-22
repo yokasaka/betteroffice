@@ -1,0 +1,24 @@
+name: Dotta toolchain
+description: Pinned bun, Rust, binaryen and wasm-pack for building the pptx Wasm on ubuntu x86_64.
+
+runs:
+  using: composite
+  steps:
+    - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+      with:
+        bun-version: ${{ env.BUN_VERSION }}
+
+    - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+      with:
+        toolchain: ${{ env.RUST_TOOLCHAIN }}
+        targets: wasm32-unknown-unknown
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: dotta-wasm
+
+    - uses: ./.github/actions/wasm-toolchain
+
+    - uses: taiki-e/install-action@dfae9bf3d6f6c6f20ef4ebb3486c01a51341ff12
+      with:
+        tool: ${{ env.WASM_PACK }}

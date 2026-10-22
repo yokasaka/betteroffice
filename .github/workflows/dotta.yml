@@ -1,0 +1,222 @@
+name: Dotta
+
+# The dotta fork's gate and release: pptx Rust/TS/Python tests, the python-pptx
+# round trip, and on a `pptx-v<upstream>-dotta.<n>` tag a GitHub Release with the
+# npm tarballs and manylinux wheels. Nothing is published to a registry.
+on:
+  push:
+    branches: [dotta/main]
+    tags: ['pptx-v*-dotta.*']
+  pull_request:
+    branches: [dotta/main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dotta-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  RUST_TOOLCHAIN: "1.99.1"
+  BUN_VERSION: "1.4.3"
+  WASM_PACK: "wasm-pack@0.15.0"
+  MATURIN_VERSION: "1.14.1"
+  PYTHON_VERSION: "3.12"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust (pptx)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: dotta-rust
+      - name: Format
+        run: |
+          cargo fmt --check
+          (cd bindings && cargo fmt --check)
+      - name: Clippy
+        run: |
+          cargo clippy --all-targets $PPTX_CRATES -- -D warnings
+          cargo clippy -p betteroffice-pptx-edit -p pptx-wasm --features wasm --target wasm32-unknown-unknown -- -D warnings
+          (cd bindings && cargo clippy -p betteroffice-pptx-python --all-targets -- -D warnings)
+        env:
+          PPTX_CRATES: -p betteroffice-opc -p betteroffice-drawingml -p betteroffice-ooxml-text -p betteroffice-metafile -p betteroffice-ooxml-diff -p betteroffice-pptx-parse -p betteroffice-pptx-edit -p betteroffice-pptx-render -p betteroffice-pptx-raster -p betteroffice-pptx -p pptx-wasm
+      - name: Test
+        run: |
+          cargo test $PPTX_CRATES
+          cargo test -p betteroffice-pptx --all-features
+        env:
+          PPTX_CRATES: -p betteroffice-opc -p betteroffice-drawingml -p betteroffice-ooxml-text -p betteroffice-metafile -p betteroffice-ooxml-diff -p betteroffice-pptx-parse -p betteroffice-pptx-edit -p betteroffice-pptx-render -p betteroffice-pptx-raster -p betteroffice-pptx -p pptx-wasm
+
+  ts:
+    name: TypeScript (pptx)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/dotta-toolchain
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Build the pptx Wasm and fonts
+        run: |
+          bun run build:pptx-wasm
+          bun run build:fonts
+      - name: Check generated Wasm declarations
+        run: git diff --exit-code -- 'packages/pptx/src/wasm/generated/*'
+      - name: Type check
+        run: |
+          bun run typecheck:shared
+          for package in pptx-i18n pptx pptx-react; do bun run --filter "@betteroffice/$package" typecheck; done
+      - name: Test
+        run: bun test --isolate ./packages/pptx-i18n ./packages/pptx ./packages/pptx-react ./shared
+
+  python:
+    name: Python binding and round trip
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/dotta-toolchain
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bindings
+      - name: Install dependencies
+        run: |
+          bun install --frozen-lockfile
+          bun run build:pptx-wasm
+          python -m pip install -r dotta/roundtrip/requirements.txt
+          python -m pip install --no-build-isolation -e bindings/python-pptx
+      - name: Binding tests
+        run: (cd bindings/python-pptx && pytest -q)
+      - name: Round trip
+        run: (cd dotta/roundtrip && pytest -q)
+        env:
+          DOTTA_REQUIRE_WASM: "1"
+
+  version:
+    name: Release version
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      npm: ${{ steps.version.outputs.npm }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: version
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if [[ ! "$tag" =~ ^pptx-v([0-9]+\.[0-9]+\.[0-9]+)-dotta\.([0-9]+)$ ]]; then
+            echo "::error::tag must look like pptx-v<upstream version>-dotta.<n>"; exit 1
+          fi
+          upstream="${BASH_REMATCH[1]}"; build="${BASH_REMATCH[2]}"
+          actual=$(node -p "require('./packages/pptx/package.json').version")
+          if [ "$actual" != "$upstream" ]; then
+            echo "::error::tag names $upstream but packages/pptx is $actual"; exit 1
+          fi
+          echo "npm=$upstream-dotta.$build" >> "$GITHUB_OUTPUT"
+
+  npm:
+    name: npm tarballs
+    needs: [version, rust, ts, python]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/dotta-toolchain
+      - run: bun install --frozen-lockfile
+      - run: bun dotta/scripts/pack-npm.ts "${{ needs.version.outputs.npm }}" dist/npm
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dotta-npm
+          path: dist/npm/*.tgz
+          if-no-files-found: error
+
+  wheels:
+    name: Wheel (${{ matrix.target }})
+    needs: [version, rust, ts, python]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64
+          - os: ubuntu-24.04-arm
+            target: aarch64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: PyO3/maturin-action@v1
+        with:
+          maturin-version: v${{ env.MATURIN_VERSION }}
+          rust-toolchain: ${{ env.RUST_TOOLCHAIN }}
+          command: build
+          args: --release --out dist
+          target: ${{ matrix.target }}
+          manylinux: "2014"
+          working-directory: bindings/python-pptx
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Smoke test
+        run: |
+          python -m pip install bindings/python-pptx/dist/*.whl
+          python - <<'EOF'
+          import betteroffice_pptx as bo
+          deck = bo.Presentation.open_path("apps/demo/public/betteroffice-demo.pptx")
+          deck.register_font("Arial", open("crates/ooxml-text/tests/fonts/LiberationSans-Regular.ttf", "rb").read())
+          deck.register_fallback_font("Noto Sans JP", open("packages/fonts-cjk/assets/NotoSansJP-Regular.otf", "rb").read())
+          assert deck.render_png(0).bytes[:4] == b"\x89PNG"
+          EOF
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dotta-wheel-${{ matrix.target }}
+          path: bindings/python-pptx/dist/*.whl
+          if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    needs: [version, npm, wheels]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: dotta-*
+          path: dist
+          merge-multiple: true
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+          base=$(git log -1 --format=%H --invert-grep --grep='^Dotta-Patch:' HEAD)
+          {
+            echo "Upstream base: openooxml/betteroffice@$base"
+            echo
+            echo "Fork changes:"
+            git log --format='- %h %s' --grep='^Dotta-Patch:' "$base..HEAD"
+            echo
+            echo "npm: ${{ needs.version.outputs.npm }}. The betteroffice-pptx wheels keep the upstream binding version; pin them by this release's URL and SHA256SUMS."
+          } > ../notes.md
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes-file ../notes.md *
