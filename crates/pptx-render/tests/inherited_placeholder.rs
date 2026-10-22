@@ -450,3 +450,172 @@ fn an_all_zero_transform_reopens_with_the_orientation_it_inherits() {
     );
     assert_eq!(drawn(&reopened(&session), &zeroed.id), live);
 }
+
+const GEOMETRY_FRAME: &str =
+    r#"<a:xfrm><a:off x="952500" y="952500"/><a:ext cx="2857500" cy="1905000"/></a:xfrm>"#;
+const GEOMETRY_SLOT: &str = r#"<p:ph type="body" idx="47"/>"#;
+
+fn geometry_deck(own: &str, layout: &str, master: &str) -> Vec<u8> {
+    deck(
+        &sp(
+            2,
+            "Body",
+            GEOMETRY_SLOT,
+            &filled(&format!("{GEOMETRY_FRAME}{own}")),
+        ),
+        &sp(
+            3,
+            "Layout",
+            GEOMETRY_SLOT,
+            &filled(&format!("{GEOMETRY_FRAME}{layout}")),
+        ),
+        &sp(
+            4,
+            "Master",
+            r#"<p:ph type="body" idx="1"/>"#,
+            &filled(&format!("{GEOMETRY_FRAME}{master}")),
+        ),
+    )
+}
+
+fn preset_xml(name: &str) -> String {
+    format!(
+        r#"<a:prstGeom prst="{name}"><a:avLst><a:gd name="adj" fmla="val 42000"/><a:gd name="adj1" fmla="val 30000"/><a:gd name="adj2" fmla="val 40000"/></a:avLst></a:prstGeom>"#
+    )
+}
+
+fn body_primitives(session: &DeckSession) -> Vec<Primitive> {
+    let mut renderer = SlideRenderer::new();
+    renderer.register_font("Arial", false, false, FONT).unwrap();
+    let snapshot = session.snapshot().unwrap();
+    let id = &snapshot.slides[0].shapes[0].id;
+    renderer
+        .layout_slide(session.package(), &snapshot, 0)
+        .unwrap()
+        .display_list
+        .primitives
+        .into_iter()
+        .filter(|primitive| match primitive {
+            Primitive::Shape { shape_id, .. } | Primitive::TextBox { shape_id, .. } => {
+                shape_id.as_ref() == Some(id)
+            }
+            _ => false,
+        })
+        .collect()
+}
+
+#[test]
+fn preset_geometry_and_adjustments_inherit_without_shape_specific_substitutions() {
+    for geometry in [
+        "ellipse",
+        "roundRect",
+        "diamond",
+        "triangle",
+        "rightArrow",
+        "leftRightArrow",
+        "star5",
+        "hexagon",
+        "wedgeRoundRectCallout",
+    ] {
+        let xml = preset_xml(geometry);
+        let direct = DeckSession::open(&geometry_deck(&xml, "", ""), 1).unwrap();
+        let expected = body_primitives(&direct);
+        assert!(expected.iter().any(|p| matches!(p, Primitive::Shape { geometry: name, geometry_fallback: false, .. } if name == geometry)));
+        for bytes in [
+            geometry_deck("", &xml, &preset_xml("rect")),
+            geometry_deck("", "", &xml),
+        ] {
+            let session = DeckSession::open(&bytes, 1).unwrap();
+            assert_eq!(body_primitives(&session), expected, "{geometry}");
+            assert_eq!(
+                body_primitives(&reopened(&session)),
+                expected,
+                "saved {geometry}"
+            );
+        }
+    }
+}
+
+#[test]
+fn explicit_geometry_overrides_parents_even_when_it_is_rectangular_or_unknown() {
+    for geometry in ["rect", "diamond", "unknownPreset"] {
+        let xml = preset_xml(geometry);
+        let direct = DeckSession::open(&geometry_deck(&xml, "", ""), 1).unwrap();
+        let inherited = DeckSession::open(
+            &geometry_deck(&xml, &preset_xml("ellipse"), &preset_xml("triangle")),
+            1,
+        )
+        .unwrap();
+        assert_eq!(
+            body_primitives(&inherited),
+            body_primitives(&direct),
+            "{geometry}"
+        );
+    }
+    let session = DeckSession::open(&geometry_deck("", "", ""), 1).unwrap();
+    assert!(
+        matches!(&body_primitives(&session)[0], Primitive::Shape { geometry, .. } if geometry == "rect")
+    );
+}
+
+#[test]
+fn inherited_custom_geometry_keeps_every_path_and_its_paint_flags() {
+    let custom = r#"<a:custGeom><a:avLst/><a:gdLst/><a:ahLst/><a:cxnLst/><a:rect l="0" t="0" r="r" b="b"/><a:pathLst><a:path w="100" h="100" stroke="0"><a:moveTo><a:pt x="0" y="100"/></a:moveTo><a:lnTo><a:pt x="50" y="0"/></a:lnTo><a:lnTo><a:pt x="100" y="100"/></a:lnTo><a:close/></a:path><a:path w="100" h="100" fill="none"><a:moveTo><a:pt x="0" y="50"/></a:moveTo><a:lnTo><a:pt x="100" y="50"/></a:lnTo></a:path></a:pathLst></a:custGeom>"#;
+    let direct = DeckSession::open(&geometry_deck(custom, "", ""), 1).unwrap();
+    let expected = body_primitives(&direct);
+    assert_eq!(expected.iter().filter(|p| matches!(p, Primitive::Shape { geometry, geometry_fallback: false, .. } if geometry == "custom")).count(), 2);
+    for bytes in [
+        geometry_deck("", custom, &preset_xml("ellipse")),
+        geometry_deck("", "", custom),
+    ] {
+        let session = DeckSession::open(&bytes, 1).unwrap();
+        assert_eq!(body_primitives(&session), expected);
+        assert_eq!(body_primitives(&reopened(&session)), expected);
+    }
+    let override_session =
+        DeckSession::open(&geometry_deck(&preset_xml("rect"), custom, ""), 1).unwrap();
+    assert!(
+        matches!(&body_primitives(&override_session)[0], Primitive::Shape { geometry, .. } if geometry == "rect")
+    );
+}
+
+#[test]
+fn text_and_transform_edits_keep_inherited_geometry_live_saved_and_undone() {
+    let bytes = geometry_deck("", &preset_xml("rightArrow"), "");
+    let session = DeckSession::open(&bytes, 1).unwrap();
+    let body = shape(&session, 0);
+    session
+        .insert_text(
+            &context(),
+            &body.text_stories[0].id,
+            0,
+            "new ",
+            &Default::default(),
+        )
+        .unwrap();
+    session.add_undo_barrier();
+    let before = body_primitives(&session);
+    session
+        .resize_shape(&context(), &slide_id(&session), &body.id, 3810000, 2857500)
+        .unwrap();
+    session
+        .move_shape(&context(), &slide_id(&session), &body.id, 0, 0)
+        .unwrap();
+    let after = body_primitives(&session);
+    assert_ne!(after, before);
+    assert!(matches!(&after[0], Primitive::Shape { geometry, .. } if geometry == "rightArrow"));
+    let saved = session.save().unwrap();
+    assert_eq!(
+        body_primitives(&DeckSession::open(&saved, 1).unwrap()),
+        after
+    );
+    let parsed = pptx_parse::parse_pptx(&saved).unwrap();
+    let pptx_parse::ShapeNode::Shape(source) = &parsed.slides[0].shapes[0] else {
+        panic!()
+    };
+    assert!(!source.has_preset_geometry);
+    assert!(session.undo());
+    assert_eq!(body_primitives(&session), before);
+    assert!(session.redo());
+    assert_eq!(body_primitives(&session), after);
+}
