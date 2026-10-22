@@ -49,8 +49,8 @@ const Preview = memo(function Preview({ frame, run, fit, previewFit, current }: 
   return <canvas ref={canvas} style={{ width: 128, display: 'block' }} aria-hidden="true" />;
 });
 
-const Slide = memo(function Slide({ id, name, index, active, disabled, frame, run, previewFit, current, onNavigate }: {
-  id: string; name: string | null; index: number; active: boolean; disabled: boolean;
+const Slide = memo(function Slide({ id, name, index, active, disabled, frame, run, previewFit, current, onNavigate, row }: {
+  id: string; name: string | null; index: number; active: boolean; disabled: boolean; row: boolean;
   frame: PeerlessConfirmedFrame | null | undefined; run: PeerlessPresentation;
   previewFit(frame: PeerlessConfirmedFrame, run: PeerlessPresentation): SlideFit | null;
   current(token: SlideFit, run: PeerlessPresentation): boolean;
@@ -59,7 +59,7 @@ const Slide = memo(function Slide({ id, name, index, active, disabled, frame, ru
   const { t } = useTranslation();
   const fit = useMemo(() => frame ? previewFit(frame, run) : null, [frame, run, previewFit]);
   return <button type="button" disabled={disabled}
-    aria-current={active ? 'page' : undefined} style={styles.slide}
+    aria-current={active ? 'page' : undefined} style={row ? styles.rowSlide : styles.slide}
     draggable={!run.store.getSnapshot().editState.readOnly}
     onDragStart={(event) => event.dataTransfer.setData('text/plain', id)}
     onDragOver={(event) => event.preventDefault()}
@@ -94,10 +94,11 @@ function SlideActions({ run, active, disabled }: { run: PeerlessPresentation; ac
   </div>;
 }
 
-export const PeerlessSlideStrip = memo(function PeerlessSlideStrip({ run, previewFit, current, onNavigate }: {
+export const PeerlessSlideStrip = memo(function PeerlessSlideStrip({ run, previewFit, current, onNavigate, placement = 'left' }: {
   run: PeerlessPresentation; previewFit(frame: PeerlessConfirmedFrame, run: PeerlessPresentation): SlideFit | null;
   current(token: SlideFit, run: PeerlessPresentation): boolean;
   onNavigate(): void;
+  placement?: 'left' | 'bottom';
 }) {
   const { store, client } = run;
   const { t } = useTranslation();
@@ -123,13 +124,18 @@ export const PeerlessSlideStrip = memo(function PeerlessSlideStrip({ run, previe
     };
   }, [store, client, run]);
   const view = useSyncExternalStore(subscribe, snapshot, snapshot);
-  return <div style={styles.strip}><aside style={{ overflowY: 'auto', flex: 1 }} aria-label={t('slides.panelLabel')}>
+  const row = placement === 'bottom';
+  return <div style={row ? styles.row : styles.strip}><aside style={row ? styles.rowList : styles.list} aria-label={t('slides.panelLabel')}>
     {view.slides.map((slide, index) => <Slide key={slide.id} {...slide} index={index} active={slide.id === view.active}
-      disabled={view.disabled} run={run} previewFit={previewFit} current={current} onNavigate={onNavigate} />)}
+      disabled={view.disabled} run={run} previewFit={previewFit} current={current} onNavigate={onNavigate} row={row} />)}
   </aside><SlideActions run={run} active={view.active} disabled={view.disabled} /></div>;
 });
 
 const styles: Record<string, CSSProperties> = {
   strip: { width: 160, display: 'flex', flexDirection: 'column', padding: 8, background: '#f1f5f9' },
+  list: { overflowY: 'auto', flex: 1 },
   slide: { display: 'flex', flexDirection: 'column', gap: 4, width: '100%', marginBottom: 8 },
+  row: { display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8, padding: 8, background: '#f1f5f9' },
+  rowList: { display: 'flex', gap: 8, overflowX: 'auto', overflowY: 'hidden', flex: 1, minWidth: 0 },
+  rowSlide: { display: 'flex', flexDirection: 'row', alignItems: 'flex-start', gap: 4, flex: 'none' },
 };

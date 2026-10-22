@@ -359,6 +359,12 @@ export type PptxAsyncEditorProps = Omit<PptxInThreadEditorProps,
   experimentalWorkerOpen?: boolean;
   collaboration?: PptxAsyncCollaborationOptions;
   onReady?: (api: PptxAsyncEditorApi) => void | (() => void);
+  /** Where the slide thumbnails sit; defaults to `'left'`. Worker editor only. */
+  slideStrip?: 'left' | 'bottom' | 'hidden';
+  /** Shows the speaker notes field; defaults to true. Worker editor only. */
+  showNotes?: boolean;
+  /** Centers the slide in the stage instead of pinning it top-left. Worker editor only. */
+  centerSlide?: boolean;
 };
 
 /** @deprecated Removed in 0.6.0. Use PptxAsyncEditorProps. */
