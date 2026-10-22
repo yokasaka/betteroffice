@@ -113,6 +113,7 @@ pub struct ShapePatch {
     pub outline: Option<ShapeOutline>,
     pub adjust_values: Option<BTreeMap<String, f64>>,
     pub table_structure: Option<TableStructure>,
+    pub table_sizes: Option<(Vec<i64>, Vec<i64>)>,
     pub texts: Vec<TextWrite>,
     /// Non-empty only when a group's child list must be rebuilt.
     pub children: Vec<ShapeWrite>,
@@ -2135,6 +2136,26 @@ fn patch_shape(
     }
     if let Some(structure) = &patch.table_structure {
         patch_table(element, structure, part)?;
+    }
+    if let Some((widths, heights)) = &patch.table_sizes {
+        let table = element
+            .child_mut("graphic")
+            .and_then(|node| node.child_mut("graphicData"))
+            .and_then(|node| node.child_mut("tbl"))
+            .ok_or_else(|| write_error(part, "table size target is not a table"))?;
+        let grid = table
+            .child_mut("tblGrid")
+            .ok_or_else(|| write_error(part, "table has no column grid"))?;
+        for (index, width) in widths.iter().enumerate() {
+            nth_child_mut(grid, "gridCol", index)
+                .ok_or_else(|| write_error(part, "table column is missing"))?
+                .set_attribute("w", width.to_string());
+        }
+        for (index, height) in heights.iter().enumerate() {
+            nth_child_mut(table, "tr", index)
+                .ok_or_else(|| write_error(part, "table row is missing"))?
+                .set_attribute("h", height.to_string());
+        }
     }
     for text in &patch.texts {
         let empty_runs = if patch.table_structure.is_some() {

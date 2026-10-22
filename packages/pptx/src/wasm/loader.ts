@@ -258,6 +258,7 @@ export interface PresentationHandle extends CollaborationReplica {
     x: number,
     y: number
   ): Profiled<TransformReceipt>;
+  setTableSizes(slideId: string, shapeId: string, widths: number[], heights: number[]): void;
   resizeShape(slideId: string, shapeId: string, width: number, height: number): TransformReceipt;
   setShapeRect(slideId: string, shapeId: string, rect: ShapeRect): TransformReceipt;
   canUndo(): boolean;
@@ -1064,6 +1065,9 @@ function openPresentationInternal(
         true
       );
     },
+    setTableSizes(slideId, shapeId, widths, heights): void {
+      jsonWasmCall(() => doc.setTableSizesJson(JSON.stringify({ slideId, shapeId, widths, heights })), true);
+    },
     resizeShape(slideId, shapeId, width, height): TransformReceipt {
       return jsonWasmCall(
         () => doc.resizeShapeJson(JSON.stringify({ slideId, shapeId, width, height })),
@@ -1290,7 +1294,7 @@ function openPresentationInternal(
       },
     });
     for (const method of [
-      ...replayMethods, 'insertTextProfiled', 'deleteTextProfiled', 'insertSlideProfiled',
+      ...replayMethods, 'setTableSizes', 'insertTextProfiled', 'deleteTextProfiled', 'insertSlideProfiled',
       'addTextBoxProfiled', 'moveShapeProfiled', 'undoProfiled', 'applyUpdate',
       'setUndoCaptureMode', 'registerFont', 'registerFallbackFont', 'historyStep', 'readCommandContent',
     ] as const) {

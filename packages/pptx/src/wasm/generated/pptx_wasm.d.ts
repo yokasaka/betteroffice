@@ -128,6 +128,7 @@ export class PptxDocument {
     setSlideLayoutJson(args: string): string;
     setSlideNotesJson(args: string): string;
     setStoryParagraphsJson(args: string): string;
+    setTableSizesJson(args: string): string;
     setUndoCaptureMode(mode: string): void;
     snapshotJson(): string;
     startUpdateObservation(): void;
@@ -301,6 +302,7 @@ export interface InitOutput {
     readonly pptxdocument_setSlideLayoutJson: (a: number, b: number, c: number) => [number, number, number, number];
     readonly pptxdocument_setSlideNotesJson: (a: number, b: number, c: number) => [number, number, number, number];
     readonly pptxdocument_setStoryParagraphsJson: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly pptxdocument_setTableSizesJson: (a: number, b: number, c: number) => [number, number, number, number];
     readonly pptxdocument_setUndoCaptureMode: (a: number, b: number, c: number) => [number, number];
     readonly pptxdocument_snapshotJson: (a: number) => [number, number, number, number];
     readonly pptxdocument_startUpdateObservation: (a: number) => [number, number];
