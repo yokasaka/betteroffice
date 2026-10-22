@@ -356,7 +356,7 @@ Use `betteroffice-pptx` for slide layout and collaborative editing.
 | `export_pptx_structured` / `export_pptx_markdown` / `render_pptx_markdown` | export bytes, render content |
 | `propose` / `proposals` / `preview_proposal` / `render_proposal` | stage and preview agent edits |
 | `accept_proposal` / `reject_proposal` | apply or drop a proposal |
-| `register_font` / `render_slide` / `render_png` | layout and PNG export |
+| `register_font` / `register_fallback_font` / `render_slide` / `render_png` | layout and PNG export |
 | `diff` / `apply_update` / `state_vector` / `state_as_update` | Yrs replicas |
 | `deck.is_collaborative` / `deck.client_id` | whether this deck may exchange updates, and as whom |
 | `deck.is_edited` | whether the engine has accepted an edit since open |

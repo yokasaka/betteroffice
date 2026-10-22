@@ -1899,6 +1899,26 @@ impl PyPresentation {
         .map_err(map_error)
     }
 
+    #[pyo3(signature = (family, data, *, bold = false, italic = false))]
+    fn register_fallback_font(
+        &mut self,
+        py: Python<'_>,
+        family: &str,
+        data: &Bound<'_, PyBytes>,
+        bold: bool,
+        italic: bool,
+    ) -> PyResult<u32> {
+        let family = family.to_owned();
+        let owned = borrow_bytes(data);
+        let data: &[u8] = &owned;
+        let deck = DetachedDeck(&mut self.presentation);
+        py.detach(move || {
+            let deck = deck;
+            deck.0.register_fallback_font(&family, bold, italic, data)
+        })
+        .map_err(map_error)
+    }
+
     fn render_slide(&self, py: Python<'_>, slide: &Bound<'_, PyAny>) -> PyResult<PyDisplayList> {
         let index = self.resolve_slide_index(slide)?;
         let deck = DetachedDeck(&self.presentation);
