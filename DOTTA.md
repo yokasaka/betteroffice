@@ -49,9 +49,11 @@ the upstream base, and every release names it in its notes.
   parts byte for byte, a layout ellipse drawn as an ellipse).
 
 Tool versions are pinned at the top of the workflow: Rust, bun, wasm-pack, maturin, Python,
-and binaryen through `.github/actions/wasm-toolchain`. Upstream's own workflows stay
-unregistered here because `main` is never pushed; if one ever runs, disable it with
-`gh workflow disable`.
+and binaryen through `.github/actions/wasm-toolchain`. GitHub registers an upstream
+workflow here only once something triggers it. `ci.yml`, `e2e.yml` and `cla.yml` ran on the
+first fork PR and are disabled. `release.yml` stays unregistered while `main` is never
+pushed. When a PR wakes another one, for example `macos-app.yml` on changes under
+`packages/`, cancel its run and disable it with `gh workflow disable`.
 
 ## Using a release from dotta
 
