@@ -106,7 +106,9 @@
     "appLabel": null,
     "opening": null,
     "noSlides": null,
-    "openPrompt": null
+    "openPrompt": null,
+    "textInput": null,
+    "selectionAnnouncement": null
   },
   "objects": {
     "defaultTextBoxName": null,
