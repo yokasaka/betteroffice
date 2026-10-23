@@ -11,6 +11,6 @@ export function peerlessMoveSlide(run: PeerlessPresentation, id: string, index: 
   return invokePeerless(run, { method: 'moveSlide', args: [id, index] });
 }
 
-export function peerlessDeleteSlide(run: PeerlessPresentation, id: string) {
-  return invokePeerless(run, { method: 'deleteSlide', args: [id] });
+export function peerlessDeleteSlide(run: PeerlessPresentation, id: string, options?: { reportRefusal?: boolean }) {
+  return invokePeerless(run, { method: 'deleteSlide', args: [id] }, options);
 }

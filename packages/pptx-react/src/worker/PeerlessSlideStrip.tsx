@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties } from 'react';
 import type { SlideFit } from '../fitSlideScale';
 import { useTranslation } from '../i18n';
@@ -49,12 +49,15 @@ const Preview = memo(function Preview({ frame, run, fit, previewFit, current }: 
   return <canvas ref={canvas} style={{ width: 128, display: 'block' }} aria-hidden="true" />;
 });
 
-const Slide = memo(function Slide({ id, name, index, active, disabled, frame, run, previewFit, current, onNavigate, row }: {
+const Slide = memo(function Slide({ id, name, index, active, disabled, frame, run, previewFit, current, onNavigate, onDelete, onStep, onMenu, row }: {
   id: string; name: string | null; index: number; active: boolean; disabled: boolean; row: boolean;
   frame: PeerlessConfirmedFrame | null | undefined; run: PeerlessPresentation;
   previewFit(frame: PeerlessConfirmedFrame, run: PeerlessPresentation): SlideFit | null;
   current(token: SlideFit, run: PeerlessPresentation): boolean;
   onNavigate(): void;
+  onDelete(id: string, index: number): void;
+  onStep(index: number): void;
+  onMenu(menu: SlideMenu): void;
 }) {
   const { t } = useTranslation();
   const fit = useMemo(() => frame ? previewFit(frame, run) : null, [frame, run, previewFit]);
@@ -69,19 +72,65 @@ const Slide = memo(function Slide({ id, name, index, active, disabled, frame, ru
       if (run.client.state.slides.some((slide) => slide.id === source)) void peerlessMoveSlide(run, source, index).catch(() => {});
     }}
     onKeyDown={(event) => {
+      if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+        if (event.key === 'Delete' || event.key === 'Backspace') {
+          event.preventDefault();
+          if (!event.repeat) onDelete(id, index);
+          return;
+        }
+        const last = run.client.state.slides.length - 1;
+        const next = ['PageUp', 'ArrowUp', 'ArrowLeft'].includes(event.key) ? Math.max(0, index - 1)
+          : ['PageDown', 'ArrowDown', 'ArrowRight'].includes(event.key) ? Math.min(last, index + 1)
+          : event.key === 'Home' ? 0 : event.key === 'End' ? last : null;
+        if (next === null) return;
+        event.preventDefault();
+        onStep(next);
+        return;
+      }
       if (!event.altKey || !['ArrowUp', 'ArrowDown'].includes(event.key)) return;
       event.preventDefault();
       const next = index + (event.key === 'ArrowUp' ? -1 : 1);
       if (next >= 0 && next < run.client.state.slides.length) void peerlessMoveSlide(run, id, next).catch(() => {});
     }}
-    onClick={() => {
+    onContextMenu={(event) => {
+      if (run.store.getSnapshot().editState.readOnly || run.client.state.slides.length < 2) return;
+      event.preventDefault();
+      onMenu({ id, index, x: event.clientX, y: event.clientY, trigger: event.currentTarget });
+    }}
+    onClick={(event) => {
       void activatePeerlessSlide(run, id).catch(() => {});
-      onNavigate();
+      // A pointer click keeps focus on the thumbnail so Delete reaches the strip; Enter and Space move to the slide.
+      if (event.detail === 0) onNavigate();
+      else event.currentTarget.focus();
     }}>
     <span>{index + 1}</span>
     {frame && fit ? <Preview frame={frame} run={run} fit={fit} previewFit={previewFit} current={current} /> : <span>{name ?? t('slides.fallbackTitle', { number: index + 1 })}</span>}
   </button>;
 });
+
+type SlideMenu = { id: string; index: number; x: number; y: number; trigger: HTMLElement };
+
+function SlideContextMenu({ menu, onDelete, onClose }: {
+  menu: SlideMenu; onDelete(id: string, index: number): void; onClose(): void;
+}) {
+  const { t } = useTranslation();
+  const root = useRef<HTMLDivElement>(null);
+  const item = useRef<HTMLButtonElement>(null);
+  const [position, setPosition] = useState({ left: menu.x, top: menu.y });
+  // Open upward or leftward when the pointer is near the bottom or right edge of the window.
+  useLayoutEffect(() => {
+    const rect = root.current!.getBoundingClientRect();
+    setPosition({ left: Math.max(0, Math.min(menu.x, window.innerWidth - rect.width)),
+      top: menu.y + rect.height > window.innerHeight ? Math.max(0, menu.y - rect.height) : menu.y });
+  }, [menu.x, menu.y]);
+  useEffect(() => { item.current?.focus(); }, []);
+  return <div ref={root} role="menu" aria-label={t('slides.panelLabel')} style={{ ...styles.menu, ...position }}
+    onMouseDown={(event) => event.preventDefault()}
+    onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); menu.trigger.focus(); onClose(); } }}>
+    <button ref={item} type="button" role="menuitem" style={styles.menuItem} onBlur={onClose}
+      onClick={() => { onClose(); onDelete(menu.id, menu.index); }}>{t('toolbar.deleteSlide')}</button>
+  </div>;
+}
 
 function SlideActions({ run, active, disabled }: { run: PeerlessPresentation; active?: string; disabled: boolean }) {
   const { t } = useTranslation();
@@ -125,10 +174,45 @@ export const PeerlessSlideStrip = memo(function PeerlessSlideStrip({ run, previe
   }, [store, client, run]);
   const view = useSyncExternalStore(subscribe, snapshot, snapshot);
   const row = placement === 'bottom';
-  return <div style={row ? styles.row : styles.strip}><aside style={row ? styles.rowList : styles.list} aria-label={t('slides.panelLabel')}>
+  const list = useRef<HTMLElement>(null);
+  // After a delete, focus the thumbnail that took the deleted one's place so Delete can repeat.
+  const refocus = useRef<{ index: number; count: number } | null>(null);
+  const [menu, setMenu] = useState<SlideMenu | null>(null);
+  // The strip never deletes the last slide: with none left it unmounts and focus is lost.
+  const deleting = useRef(0);
+  const remove = useCallback((id: string, index: number) => {
+    const count = run.client.state.slides.length;
+    if (count - deleting.current < 2 || run.store.getSnapshot().editState.readOnly) return;
+    const target = { index, count };
+    const clear = () => { if (refocus.current === target) refocus.current = null; };
+    refocus.current = target;
+    deleting.current += 1;
+    try {
+      void peerlessDeleteSlide(run, id, { reportRefusal: false })
+        .then((ack) => { if (!ack.outcomes.some((outcome) => outcome.committed)) clear(); }, clear)
+        .finally(() => { deleting.current -= 1; });
+    } catch { deleting.current -= 1; clear(); }
+  }, [run]);
+  const step = useCallback((index: number) => {
+    const slide = run.client.state.slides[index];
+    if (!slide) return;
+    void activatePeerlessSlide(run, slide.id).catch(() => {});
+    list.current?.querySelectorAll('button')[index]?.focus();
+  }, [run]);
+  const closeMenu = useCallback(() => setMenu(null), []);
+  useLayoutEffect(() => {
+    const target = refocus.current;
+    if (!target || view.slides.length >= target.count) return;
+    refocus.current = null;
+    const buttons = list.current?.querySelectorAll('button');
+    if (buttons?.length) buttons[Math.min(target.index, buttons.length - 1)]!.focus();
+  }, [view.slides]);
+  return <div style={row ? styles.row : styles.strip}><aside ref={list} style={row ? styles.rowList : styles.list} aria-label={t('slides.panelLabel')}>
     {view.slides.map((slide, index) => <Slide key={slide.id} {...slide} index={index} active={slide.id === view.active}
-      disabled={view.disabled} run={run} previewFit={previewFit} current={current} onNavigate={onNavigate} row={row} />)}
-  </aside><SlideActions run={run} active={view.active} disabled={view.disabled} /></div>;
+      disabled={view.disabled} run={run} previewFit={previewFit} current={current} onNavigate={onNavigate}
+      onDelete={remove} onStep={step} onMenu={setMenu} row={row} />)}
+  </aside><SlideActions run={run} active={view.active} disabled={view.disabled} />
+  {menu && !view.disabled && <SlideContextMenu menu={menu} onDelete={remove} onClose={closeMenu} />}</div>;
 });
 
 const styles: Record<string, CSSProperties> = {
@@ -138,4 +222,7 @@ const styles: Record<string, CSSProperties> = {
   row: { display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8, padding: 8, background: '#f1f5f9' },
   rowList: { display: 'flex', gap: 8, overflowX: 'auto', overflowY: 'hidden', flex: 1, minWidth: 0 },
   rowSlide: { display: 'flex', flexDirection: 'row', alignItems: 'flex-start', gap: 4, flex: 'none' },
+  menu: { position: 'fixed', zIndex: 10, padding: 4, background: '#fff', border: '1px solid #cbd5e1', borderRadius: 4,
+    boxShadow: '0 4px 12px rgba(15, 23, 42, 0.15)' },
+  menuItem: { display: 'block', width: '100%', padding: '4px 12px', textAlign: 'start', background: 'none', border: 0 },
 };
