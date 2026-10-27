@@ -1143,7 +1143,6 @@ impl DeckSession {
                 .filter(|value| *value > 0 && validate_coordinate(*value).is_ok())
                 .unwrap_or(after.max(1))
         };
-        let old_width = table.grid.iter().fold(0i64, |a, b| a.saturating_add(*b));
         let old_height = table
             .rows
             .iter()
@@ -1160,11 +1159,10 @@ impl DeckSession {
             "graphicJson",
             Some(&GraphicFrameData::Table(table)),
         )?;
-        shape.insert(
-            &mut txn,
-            "width",
-            grown(frame.width, old_width, width) as f64,
-        );
+        // Columns paint scaled to the frame width, so the frame takes the width of the
+        // columns it is given; rows do not scale, so a frame taller than its rows keeps
+        // the extra height
+        shape.insert(&mut txn, "width", width as f64);
         shape.insert(
             &mut txn,
             "height",

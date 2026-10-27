@@ -223,6 +223,34 @@ fn a_frame_taller_than_its_rows_keeps_its_extra_height() {
 }
 
 #[test]
+fn a_frame_scaled_off_its_grid_takes_the_width_of_the_columns_it_is_given() {
+    // Columns paint scaled to the frame width, so a host that sends the widths it sees
+    // (the grid scaled to a frame resized to 75%) must get a frame of exactly that width
+    let session = DeckSession::open(DECK, 8).unwrap();
+    let (slide, shape) = ids(&session);
+    let context = EditCtx::local("test");
+    let (grid, heights, _, frame_height) = sizes(&session);
+    let scaled: i64 = grid.iter().sum::<i64>() * 3 / 4;
+    session
+        .resize_shape(&context, &slide, &shape, scaled, frame_height)
+        .unwrap();
+    let mut widths: Vec<i64> = grid.iter().map(|width| width * 3 / 4).collect();
+    let last = widths.len() - 1;
+    widths[last] += scaled - widths.iter().sum::<i64>();
+    widths[0] += 100000;
+    widths[1] -= 100000;
+    session
+        .set_table_sizes(&context, &slide, &shape, widths.clone(), heights)
+        .unwrap();
+    let (saved, _, width, _) = sizes(&session);
+    assert_eq!(saved, widths);
+    assert_eq!(
+        width, scaled,
+        "an inner border must not shrink the frame again"
+    );
+}
+
+#[test]
 fn rows_with_no_minimum_height_keep_it_through_a_column_resize() {
     let parts: Vec<_> = ooxml_opc::unzip_parts(DECK)
         .unwrap()
