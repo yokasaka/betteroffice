@@ -2076,6 +2076,8 @@ impl<'a> LayoutBuilder<'a> {
                 rect.h
             },
             label: format!("Table, {row_count} rows, {column_count} columns"),
+            columns,
+            rows,
             primitives,
             transform,
         });

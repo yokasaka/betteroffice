@@ -468,6 +468,52 @@ fn a_row_grows_to_hold_text_that_overruns_its_declared_height() {
 }
 
 #[test]
+fn the_table_reports_its_grid_lines_with_rows_a_merge_hides_and_rows_that_grew() {
+    let session = session();
+    let lines = |session: &DeckSession| {
+        let list = display_list(session);
+        list.primitives
+            .iter()
+            .find_map(|primitive| match primitive {
+                Primitive::Table { columns, rows, .. } => Some((
+                    columns.iter().copied().map(round).collect::<Vec<_>>(),
+                    rows.iter().copied().map(round).collect::<Vec<_>>(),
+                )),
+                _ => None,
+            })
+            .expect("the frame paints a table")
+    };
+
+    // "Tall" spans the second and third rows, so no cell starts on the third row's top line;
+    // the table still reports it
+    let (columns, rows) = lines(&session);
+    assert_eq!(columns, vec![64.0, 256.0, 384.0, 664.0]);
+    assert_eq!(rows, vec![64.0, 102.93, 141.87, 180.8]);
+
+    let story_id = session.snapshot().unwrap().slides[0].shapes[0].text_stories[4]
+        .id
+        .clone();
+    session
+        .insert_text(
+            &EditCtx::local("test"),
+            &story_id,
+            0,
+            "a middle cell holding far more text than its declared row height leaves room for",
+            &TextStyle::default(),
+        )
+        .unwrap();
+    let (_, grown) = lines(&session);
+    assert!(
+        grown[2] > rows[2],
+        "the grown row's bottom line did not move: {grown:?}"
+    );
+    assert!(
+        ((grown[3] - grown[2]) - (rows[3] - rows[2])).abs() < 0.05,
+        "the row below did not keep its height: {grown:?} against {rows:?}"
+    );
+}
+
+#[test]
 fn a_turned_table_keeps_the_frame_height_so_its_pivot_does_not_move() {
     const TURNED: &[u8] = include_bytes!("fixtures/table-rotated.pptx");
     const OVERRUN: &str =

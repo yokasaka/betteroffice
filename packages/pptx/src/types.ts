@@ -574,6 +574,11 @@ export interface TablePrimitive extends PrimitiveBase {
   kind: 'table';
   name: string;
   label: string;
+  /** Column edges in slide pixels from the left, before `transform`; one more than the columns. */
+  columns?: number[];
+  /** Row edges in slide pixels from the top after rows grow to fit their text, before
+   *  `transform`; lines a merged cell covers are listed too, so one more than the rows. */
+  rows?: number[];
   primitives: SlidePrimitive[];
 }
 
