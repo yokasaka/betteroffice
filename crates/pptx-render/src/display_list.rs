@@ -389,6 +389,14 @@ pub enum Primitive {
         w: f32,
         h: f32,
         label: String,
+        /// Grid lines in slide pixels before `transform`: column edges from the
+        /// left, then row edges from the top after rows grow to fit their text.
+        /// Lines a merged cell covers are still listed, so there is one more of
+        /// each than there are columns and rows.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        columns: Vec<f32>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        rows: Vec<f32>,
         primitives: Vec<Primitive>,
         #[serde(default, skip_serializing_if = "Transform::is_identity")]
         transform: Transform,

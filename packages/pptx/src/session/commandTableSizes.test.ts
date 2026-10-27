@@ -5,6 +5,7 @@ import { createSessionClient } from '../../../../shared/office-session/client';
 import { createSessionHost } from '../../../../shared/office-session/host';
 import { createInProcessPair } from '../../../../shared/office-session/testing/inProcessTransport';
 import * as wasm from '../wasm/loader';
+import type { TablePrimitive } from '../types';
 import { registerPresentationCommandHandlers } from './commandHost';
 import { PRESENTATION_COMMAND_METHODS, type PresentationCommandAck, type PresentationCommandEnvelope,
   type PresentationCommandEvents, type PresentationCommandIntent, type PresentationCommandMethods } from './commandProtocol';
@@ -77,6 +78,24 @@ test('set_table_sizes_command_applies_undoes_redoes_and_saves', async () => {
     expect(slide).toContain('<a:gridCol w="2000000"/><a:gridCol w="1000000"/><a:gridCol w="2500000"/>');
     expect(slide).toContain('<a:tr h="600000">');
     expect(slide).toContain('<a:ext cx="5500000" cy="1500000"/>');
+  } finally { await session.dispose(); }
+});
+
+test('layout_reports_the_table_grid_lines_after_set_table_sizes', async () => {
+  const session = await open();
+  try {
+    const table = () => session.handle().layoutSlide(0).primitives.find((entry) => entry.kind === 'table') as TablePrimitive;
+    const before = table();
+    expect(before.columns).toHaveLength(4);
+    expect(before.rows).toHaveLength(4);
+    expect([before.columns![0], before.rows![0]]).toEqual([before.x, before.y]);
+    await session.command(session.state, 1, { kind: 'invoke', payload: {
+      ...input, method: 'setTableSizes', args: [session.slideId, session.shapeId, [2000000, 1000000, 2500000], [400000, 500000, 600000]] } });
+    const after = table();
+    // 9525 EMU per slide pixel
+    expect(after.columns!.map((x) => Math.round(x - after.columns![0]!))).toEqual([0, 210, 315, 577]);
+    expect(after.rows).toHaveLength(4);
+    expect(after.rows!.every((y, i) => i === 0 || y > after.rows![i - 1]!)).toBe(true);
   } finally { await session.dispose(); }
 });
 
