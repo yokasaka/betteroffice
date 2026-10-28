@@ -4,6 +4,13 @@ import type { PresentationHandle } from '../wasm/loader';
 import type { PresentationCommandMutation } from './commandProtocol';
 import { findTopLevelShape } from './commandShapes';
 
+/** Operations that change nothing but the slide their first argument names. */
+export const SINGLE_SLIDE_OPERATIONS: ReadonlySet<PresentationCommandMutation['method']> = new Set([
+  'insertTableRow', 'deleteTableRow', 'insertTableColumn', 'deleteTableColumn', 'setTableSizes', 'setSlideNotes', 'addComment',
+  'setShapeFill', 'setShapeStroke', 'setShapeAdjust', 'removeShape', 'bringShapeToFront', 'sendShapeToBack',
+  'bringShapeForward', 'sendShapeBackward',
+]);
+
 export function prepareCommandOperation(handle: PresentationHandle, mutation: PresentationCommandMutation): (() => unknown) | null {
   if (!mutation || !Array.isArray(mutation.args) || mutation.args.length > (mutation.method === 'insertTableColumn' ? 6 : 5)) return null;
   const { method, args } = mutation;

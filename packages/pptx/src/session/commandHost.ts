@@ -17,7 +17,7 @@ import {
   type PresentationHandle, type PresentationHistoryReceipt,
 } from '../wasm/loader';
 import { buildCommandFrame } from './commandFrame';
-import { prepareCommandOperation } from './commandOperations';
+import { prepareCommandOperation, SINGLE_SLIDE_OPERATIONS } from './commandOperations';
 import { createPresentationCommandProjection,
   type PresentationSharedAck, type PresentationSharedMethods } from './commandSharedAdapter';
 import { findLine, hitGeometry, indexHitGeometry, navigateGeometry, transformedRect,
@@ -69,7 +69,7 @@ export function registerPresentationCommandHandlers(
   };
   type Admission =
     | { kind: 'observer'; enabled: boolean }
-    | { kind: 'invoke'; run(): unknown; result?: unknown; method: string; receipt?: PresentationHistoryReceipt }
+    | { kind: 'invoke'; run(): unknown; result?: unknown; method: string; slideId?: string; receipt?: PresentationHistoryReceipt }
     | { kind: 'remote'; bytes?: readonly ArrayBuffer[]; pipe?: PipeCommandPayload<PptxPresenceCursor>; receipt?: PresentationHistoryReceipt }
     | { kind: 'batch'; request: PptxEditRequest; result?: PptxEditResult; receipt?: PresentationHistoryReceipt }
     | { kind: 'font'; font: { family: string; bytes: ArrayBuffer; bold?: boolean; italic?: boolean }; fallback: boolean; fontId?: number }
@@ -648,7 +648,9 @@ export function registerPresentationCommandHandlers(
       if (composition) return 'invalid-composition';
       if (command.basis.version !== version) return 'stale-basis';
       const run = prepareCommandOperation(presentation(), command.payload);
-      return run ? { kind: 'invoke', run, method: command.payload.method } : 'invalid-payload';
+      const { method, args } = command.payload;
+      return run ? { kind: 'invoke', run, method,
+        slideId: SINGLE_SLIDE_OPERATIONS.has(method) ? args[0] as string : undefined } : 'invalid-payload';
     }
     if (command.kind === 'collabPipe') {
       return pipe && validPipePayload(command.payload, DEFAULT_MAX_FRAME_BYTES, {
@@ -1148,8 +1150,8 @@ export function registerPresentationCommandHandlers(
       admitted.result = admitted.run();
       opened.addUndoBoundary();
       if (before === opened.version()) return false;
-      admitted.receipt = { applied: true, changedSlideIds: [...revisions.keys()], deckSizeChanged: false,
-        slideOrderChanged: ['insertSlide', 'deleteSlide', 'moveSlide'].includes(admitted.method) };
+      admitted.receipt = { applied: true, changedSlideIds: admitted.slideId === undefined ? [...revisions.keys()] : [admitted.slideId],
+        deckSizeChanged: false, slideOrderChanged: ['insertSlide', 'deleteSlide', 'moveSlide'].includes(admitted.method) };
       refreshHistory(command.seq, admitted.receipt);
       if (admitted.method === 'insertSlide') activeSlideId = (admitted.result as { slideId: string }).slideId;
       selection = selected ? resolve(selected) : null;
