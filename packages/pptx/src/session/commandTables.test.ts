@@ -48,6 +48,7 @@ async function open(options: { merged?: boolean; collaboration?: boolean } = {})
         return { slide: slide.id, shape: shape.id, rows: graphic.rows.length, columns: graphic.grid.length, grid: graphic.grid, width: shape.width };
       },
       canUndo: () => handle!.canUndo(),
+      state: () => state,
       async run(intent: unknown) {
         seq += 1;
         state = await rpc.call.command({ ...identity, seq, basis: { epoch: state.epoch, version: state.version },
@@ -78,6 +79,19 @@ test('table structure invokes apply, undo and redo in a solo session', async () 
     expect(session.table()).toMatchObject({ rows: 3, columns: 4 });
     expect(await session.run({ kind: 'redo', payload: input })).toMatchObject({ status: 'applied', committed: true });
     expect(session.table()).toMatchObject({ rows: 3, columns: 3 });
+  } finally { await session.dispose(); }
+});
+
+test('table structure invokes report only the table slide as changed', async () => {
+  const session = await open();
+  try {
+    expect(await session.run(invoke('insertSlide', [1]))).toMatchObject({ status: 'applied', committed: true });
+    const { slide, shape } = session.table();
+    for (const intent of [invoke('insertTableRow', [slide, shape, 0, 'after']), invoke('insertTableColumn', [slide, shape, 0, 'before']),
+      invoke('deleteTableRow', [slide, shape, 0]), invoke('deleteTableColumn', [slide, shape, 0])]) {
+      expect(await session.run(intent)).toMatchObject({ status: 'applied', committed: true });
+      expect(session.state().dirtySlideIds).toEqual([slide]);
+    }
   } finally { await session.dispose(); }
 });
 

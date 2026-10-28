@@ -260,6 +260,73 @@ test('history_keeps_unaffected_thumbnail_and_story_cache', async () => {
   } finally { read.mockRestore(); story.mockRestore(); snapshot.mockRestore(); await session.dispose(); }
 });
 
+test.each([
+  ['setShapeFill', (slide: string, text: string) => [slide, text, '#336699']],
+  ['setShapeStroke', (slide: string, text: string) => [slide, text, { color: '#336699', widthPt: 2 }]],
+  ['setShapeAdjust', (slide: string, _: string, box: string) => [slide, box, { adj: 30000 }]],
+  ['removeShape', (slide: string, text: string) => [slide, text]],
+  ['bringShapeToFront', (slide: string, text: string) => [slide, text]],
+  ['sendShapeToBack', (slide: string, _: string, box: string) => [slide, box]],
+  ['bringShapeForward', (slide: string, text: string) => [slide, text]],
+  ['sendShapeBackward', (slide: string, _: string, box: string) => [slide, box]],
+  ['setSlideNotes', (slide: string) => [slide, 'Speaker note']],
+  ['addComment', (slide: string) => [slide, { author: 'Reviewer', text: 'Check this', created: '2026-01-01T00:00:00Z' }]],
+])('invoking_%s_keeps_the_other_slides_thumbnail_and_story_cache', async (method, args) => {
+  const session = await open();
+  const read = spyOn(session.handle(), 'readCommandContent');
+  try {
+    const [first, second] = session.stories as [PptxStoryText, PptxStoryText];
+    const opened = await session.command(session.state, 1, { kind: 'activateSlide', payload: { slideId: second.slideId } });
+    const inserted = await session.command(opened, 2, { kind: 'insertShape', payload: {
+      ...input, slideId: second.slideId, draft: { name: 'Box', geometry: 'roundRect', rect: { x: 200000, y: 1600000, width: 1500000, height: 900000 } } } });
+    expect(inserted.outcomes[0]).toMatchObject({ status: 'applied', committed: true });
+    const back = await session.command(inserted, 3, { kind: 'activateSlide', payload: { slideId: first.slideId } });
+    const before = await session.thumbnail(first.slideId);
+    read.mockClear();
+    const edited = await session.command(back, 4, { kind: 'invoke', payload: {
+      ...input, method, args: args(second.slideId, second.shapeId, inserted.creation!.shapeId) } });
+    expect(edited.outcomes[0]).toMatchObject({ status: 'applied', committed: true });
+    expect(edited.dirtySlideIds).toEqual([second.slideId]);
+    expect(read).toHaveBeenCalledWith({ slideIds: [second.slideId] });
+    expect(await session.thumbnail(first.slideId, before.slideRevision)).toMatchObject({
+      status: 'unchanged', slideRevision: before.slideRevision });
+  } finally { read.mockRestore(); await session.dispose(); }
+});
+
+test('accepting_a_proposal_redraws_the_slide_it_edits', async () => {
+  const session = await open();
+  try {
+    const [, second] = session.stories as [PptxStoryText, PptxStoryText];
+    const proposed = await session.command(session.state, 1, { kind: 'invoke', payload: {
+      ...input, method: 'propose', args: ['Writer', null, [{ type: 'replaceText', storyId: second.storyId, start: 0, end: 5, text: 'omega' }]] } });
+    expect(proposed.outcomes[0]).toMatchObject({ status: 'applied' });
+    const before = await session.thumbnail(second.slideId);
+    const accepted = await session.command(proposed, 2, { kind: 'invoke', payload: {
+      ...input, method: 'acceptProposal', args: [(proposed.mutationResult as { id: string }).id] } });
+    expect(accepted.outcomes[0]).toMatchObject({ status: 'applied', committed: true });
+    expect(accepted.dirtySlideIds).toContain(second.slideId);
+    expect(await session.thumbnail(second.slideId, before.slideRevision)).toMatchObject({ status: 'frame' });
+  } finally { await session.dispose(); }
+});
+
+test.each([
+  ['moveSlide', (_: string, second: string) => [second, 0], (first: string) => first],
+  ['deleteSlide', (first: string) => [first], (_: string, second: string) => second],
+  ['insertSlide', () => [0], (first: string) => first],
+])('invoking_%s_redraws_the_slides_it_moves', async (method, args, moved) => {
+  const session = await open();
+  try {
+    const [first, second] = session.stories as [PptxStoryText, PptxStoryText];
+    const slide = moved(first.slideId, second.slideId);
+    const before = await session.thumbnail(slide);
+    const reordered = await session.command(session.state, 1, { kind: 'invoke', payload: {
+      ...input, method, args: args(first.slideId, second.slideId) } });
+    expect(reordered.outcomes[0]).toMatchObject({ status: 'applied', committed: true });
+    expect(reordered.dirtySlideIds).toContain(slide);
+    expect(await session.thumbnail(slide, before.slideRevision)).toMatchObject({ status: 'frame' });
+  } finally { await session.dispose(); }
+});
+
 test('redoing_an_inserted_slide_reselects_it', async () => {
   const session = await open();
   try {

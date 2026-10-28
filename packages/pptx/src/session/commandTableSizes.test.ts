@@ -81,6 +81,19 @@ test('set_table_sizes_command_applies_undoes_redoes_and_saves', async () => {
   } finally { await session.dispose(); }
 });
 
+test('set_table_sizes_reports_only_the_table_slide_as_changed', async () => {
+  const session = await open();
+  try {
+    const inserted = await session.command(session.state, 1, { kind: 'invoke', payload: {
+      ...input, method: 'insertSlide', args: [1] } });
+    expect(inserted.outcomes[0]).toMatchObject({ status: 'applied', committed: true });
+    const resized = await session.command(inserted, 2, { kind: 'invoke', payload: {
+      ...input, method: 'setTableSizes', args: [session.slideId, session.shapeId, [2000000, 1000000, 2500000], [400000, 500000, 600000]] } });
+    expect(resized.outcomes[0]).toMatchObject({ status: 'applied', committed: true });
+    expect(resized.dirtySlideIds).toEqual([session.slideId]);
+  } finally { await session.dispose(); }
+});
+
 test('layout_reports_the_table_grid_lines_after_set_table_sizes', async () => {
   const session = await open();
   try {
