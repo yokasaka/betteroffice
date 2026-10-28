@@ -155,7 +155,7 @@ export function PeerlessPptxSurface(props: PptxAsyncEditorInternalProps) {
     ctx?.setTransform(1, 0, 0, 1, 0, 0);
     ctx?.clearRect(0, 0, surface.width, surface.height);
   }, [empty]);
-  const { toolbar, showToolbar } = props;
+  const { toolbar, showToolbar, slideStrip = 'left' } = props;
   const [zoom, setZoom] = useState<number | 'fit'>(() => initialPptxZoom(props.initialZoom));
   const initialZoom = useRef(props.initialZoom);
   initialZoom.current = props.initialZoom;
@@ -269,6 +269,8 @@ export function PeerlessPptxSurface(props: PptxAsyncEditorInternalProps) {
     return () => { try { collaboration.onReplica?.(null); } finally { retirePeerlessReplica(replica); } };
   }, [presentation, failure, props.collaboration?.onReplica]);
   const insertionScale = presentation?.getVisualSnapshot()?.fit.scale ?? 1;
+  const strip = slideStrip !== 'hidden' && chrome && slides && slides.length > 0 &&
+    <PeerlessSlideStrip run={chrome} previewFit={previewFit} current={current} onNavigate={navigate} placement={slideStrip} />;
   return <PptxCommandContext.Provider value={commands}><div ref={editor} className={props.className} style={{ ...styles.editor, ...props.style }} data-testid="pptx-worker-editor">
     {toolbarVisible && (editorToolbar || chrome) && <div style={styles.toolbarShell}><EditorChromeContext.Provider value>
       {editorToolbar && <div style={styles.toolbar}>{toolbar ?? (chrome ? <EditorToolbar mode="commands" /> : null)}</div>}
@@ -284,8 +286,7 @@ export function PeerlessPptxSurface(props: PptxAsyncEditorInternalProps) {
     </PresentationFailure>}
     <div ref={workspace} style={styles.workspace}>
       <PeerlessImagePicker input={picker} origin={pictureOrigin} onError={(error) => callbacks.current.onError?.(error)} />
-      {chrome && slides && slides.length > 0 && <PeerlessSlideStrip run={chrome} previewFit={previewFit} current={current}
-        onNavigate={navigate} />}
+      {slideStrip === 'left' && strip}
       {plugins.managed && <PluginDock host={plugins.host} placement="left" activations={plugins.activations.filter((entry) => entry.plugin.panel?.placement === 'left')} available={available} />}
       <div ref={stage} role="application" aria-label={t('editor.appLabel')} tabIndex={0}
         aria-readonly={Boolean(props.readOnly || failure)} style={styles.stage}
@@ -329,8 +330,9 @@ export function PeerlessPptxSurface(props: PptxAsyncEditorInternalProps) {
       {presentation && <PeerlessReview run={presentation} diffHost={slideFrame} state={review} proposals={proposals} commands={commands}
         onError={(error) => callbacks.current.onError?.(error)} exit={() => { setReview({ ...review, presenting: false }); focus(); }} />}
     </div>
+    {slideStrip === 'bottom' && strip}
     {plugins.managed && <PluginDock host={plugins.host} placement="bottom" activations={plugins.activations.filter((entry) => entry.plugin.panel?.placement === 'bottom')} available={available} />}
-    {presentation && <PeerlessNotes run={presentation} onError={(error) => callbacks.current.onError?.(error)} />}
+    {presentation && props.showNotes !== false && <PeerlessNotes run={presentation} onError={(error) => callbacks.current.onError?.(error)} />}
   </div></PptxCommandContext.Provider>;
 }
 

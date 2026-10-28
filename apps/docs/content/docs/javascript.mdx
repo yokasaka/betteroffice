@@ -351,6 +351,10 @@ their place through `handle.anchorCaret()` and `handle.resolveCaretAnchor()`,
 caret anchors that later edits, undo and remote updates move along; with
 `legacySyncApi`, hosts can use them too.
 
+For a narrow pane, `slideStrip` moves the thumbnails `'bottom'` or `'hidden'`,
+`showNotes={false}` drops the notes field.
+The in-thread fallback, used without `Worker`, ignores them.
+
 ## Host PPTX editor plugins
 
 `PptxEditor` installs host-owned tools through the same `plugins`,

@@ -353,6 +353,10 @@ export type PptxAsyncEditorProps = Omit<PptxInThreadEditorProps,
   experimentalWorkerOpen?: boolean;
   collaboration?: PptxAsyncCollaborationOptions;
   onReady?: (api: PptxAsyncEditorApi) => void | (() => void);
+  /** Where the slide thumbnails sit; defaults to `'left'`. Worker editor only. */
+  slideStrip?: 'left' | 'bottom' | 'hidden';
+  /** Shows the speaker notes field; defaults to true. Worker editor only. */
+  showNotes?: boolean;
 };
 
 export type PptxAsyncEditorInternalProps = Omit<PptxAsyncEditorProps, 'file'> & { file?: Uint8Array };
