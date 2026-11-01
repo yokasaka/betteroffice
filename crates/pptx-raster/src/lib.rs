@@ -251,11 +251,13 @@ pub fn render_slide_shared(
         shadow_pixels: 0,
         max_shadow_pixels: options.max_shadow_pixels,
     };
-    for primitive in &dl.primitives {
-        painter.paint(primitive, base, None)?;
-    }
+    let painted = dl
+        .primitives
+        .iter()
+        .try_for_each(|primitive| painter.paint(primitive, base, None));
     let skipped_images = painter.skipped_images;
     images.this_slide.clear();
+    painted?;
 
     Ok(RenderedSlide {
         bytes: encode_png(pixmap, width, height)?,
