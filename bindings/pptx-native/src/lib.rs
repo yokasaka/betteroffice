@@ -390,15 +390,17 @@ impl PptxPresentation {
     #[napi(ts_return_type = "Promise<MediaResource[]>")]
     pub fn media(&self) -> Result<AsyncTask<PendingTask<Vec<MediaResource>>>> {
         self.worker.submit(|presentation| {
-            Ok(presentation
+            presentation
                 .media()
                 .iter()
-                .map(|part| MediaResource {
-                    path: part.part_path.clone(),
-                    content_type: part.content_type.clone(),
-                    data: part.bytes.clone().into(),
+                .map(|part| {
+                    Ok(MediaResource {
+                        path: part.part_path.clone(),
+                        content_type: part.content_type.clone(),
+                        data: part.bytes().map_err(error)?.into_owned().into(),
+                    })
                 })
-                .collect())
+                .collect()
         })
     }
 

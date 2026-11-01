@@ -1124,8 +1124,8 @@ fn a_2_1_deck_with_integer_media_arrays_migrates_to_base64() {
     let update = fresh.encode_state_as_update_v1();
     let json = package_json(&update);
     assert!(
-        json.contains("\"bytes\":\""),
-        "2.2 must write base64 strings"
+        !json.contains("\"bytes\""),
+        "media stays in the source package"
     );
 
     let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();

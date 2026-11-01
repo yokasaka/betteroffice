@@ -689,7 +689,10 @@ impl Default for PptxRenderer {
 
 #[wasm_bindgen(js_name = parsePptxJson)]
 pub fn parse_pptx_json(data: &[u8]) -> Result<String, JsValue> {
-    let package = pptx_parse::parse_pptx(data).map_err(js_error)?;
+    let mut package = pptx_parse::parse_pptx(data).map_err(js_error)?;
+    for part in &mut package.media {
+        part.inflate().map_err(js_error)?;
+    }
     serde_json::to_string(&package).map_err(js_error)
 }
 
@@ -710,7 +713,7 @@ pub fn parse_pptx_json_without_media(data: &[u8]) -> Result<String, JsValue> {
             .map(|part| MediaSummary {
                 part_path: &part.part_path,
                 content_type: &part.content_type,
-                byte_length: part.bytes.len(),
+                byte_length: part.byte_length() as usize,
             })
             .collect(),
         table_styles: &package.table_styles,
@@ -1442,7 +1445,13 @@ mod tests {
         paragraph.margin_left = Some(paragraph.margin_left.unwrap_or(0) + 1);
         packages.push(changed);
         let mut changed = package.clone();
-        changed.media[0].bytes.push(0);
+        let mut bytes = changed.media[0].bytes().unwrap().into_owned();
+        bytes.push(0);
+        changed.media[0] = pptx_parse::MediaPart::new(
+            changed.media[0].part_path.clone(),
+            changed.media[0].content_type.clone(),
+            bytes,
+        );
         packages.push(changed);
         let mut changed = package.clone();
         changed.charts.push(pptx_parse::ChartPart {

@@ -3553,7 +3553,7 @@ fn picture_insertion_preserves_prefixed_metadata_and_exhausted_numeric_names() {
     let image = package
         .media
         .iter()
-        .find(|media| media.bytes == picture_draft().media_bytes)
+        .find(|media| *media.bytes().unwrap() == *picture_draft().media_bytes)
         .unwrap();
     assert_eq!(image.content_type, "image/png");
     let saved_parts = parts(&saved);

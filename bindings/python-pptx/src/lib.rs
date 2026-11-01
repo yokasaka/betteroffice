@@ -1468,14 +1468,16 @@ impl PyPresentation {
         Ok(PyStory::from_core(&story))
     }
 
-    fn media(&self) -> Vec<PyMedia> {
+    fn media(&self) -> PyResult<Vec<PyMedia>> {
         self.presentation
             .media()
             .iter()
-            .map(|part| PyMedia {
-                data: part.bytes.clone(),
-                path: part.part_path.clone(),
-                content_type: part.content_type.clone(),
+            .map(|part| {
+                Ok(PyMedia {
+                    data: part.bytes().map_err(PptxError::new_err)?.into_owned(),
+                    path: part.part_path.clone(),
+                    content_type: part.content_type.clone(),
+                })
             })
             .collect()
     }
