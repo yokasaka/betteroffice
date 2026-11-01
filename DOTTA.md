@@ -13,7 +13,8 @@ published to npm or PyPI: every build is a GitHub Release of this repository.
   whose subject ends in a label and whose body has a `Dotta-Patch:` line:
   - `TO-UPSTREAM`: meant for upstream, not sent yet.
   - `SENT #<n>`: open upstream as openooxml/betteroffice#n.
-  - `DOTTA-ONLY`: fork tooling (this file, `dotta/`, `.github/workflows/dotta.yml`).
+  - `DOTTA-ONLY`: fork tooling (this file, `dotta/`, `.github/workflows/dotta.yml`),
+    or an engine change only dotta wants (upstream would not take its trade-off).
 
 List the stack with `git log --grep='^Dotta-Patch:' --oneline`. The commit below the stack is
 the upstream base, and every release names it in its notes.

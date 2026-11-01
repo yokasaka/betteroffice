@@ -513,6 +513,7 @@ impl SlideRenderer {
             metafile_budget: MAX_METAFILE_PRIMITIVES,
             metafile_bytes: 32 * 1024 * 1024,
             metafiles: HashMap::new(),
+            dpis: HashMap::new(),
             media_parts: None,
             chart_parts: None,
             slide_number: i64::from(package.presentation.first_slide_num) + slide_index as i64,
@@ -525,9 +526,7 @@ impl SlideRenderer {
         if let Some(picture) = background_picture
             && let Some(asset_id) = picture.media_part_path.clone()
         {
-            let background_dpi = builder
-                .media_part(&asset_id)
-                .and_then(|part| image_dpi(&part.bytes().ok()?));
+            let background_dpi = builder.media_dpi(&asset_id);
             let tile = picture_fill_tile(picture, background_dpi);
             let (crop, destination) = picture_fill_crop(picture).placement(0.0, 0.0, width, height);
             let destination = if tile.is_some() { None } else { destination };
@@ -906,6 +905,7 @@ struct LayoutBuilder<'a> {
     metafile_budget: usize,
     metafile_bytes: usize,
     metafiles: HashMap<&'a str, Option<Arc<MetafileDrawing>>>,
+    dpis: HashMap<&'a str, Option<f32>>,
     /// Package media keyed by part path, built on first picture lookup so
     /// per-shape work stays independent of the deck's part count.
     media_parts: Option<HashMap<&'a str, &'a MediaPart>>,
@@ -1578,6 +1578,17 @@ impl<'a> LayoutBuilder<'a> {
             .copied()
     }
 
+    /// The declared resolution of a media part, read once per slide.
+    fn media_dpi(&mut self, part_path: &str) -> Option<f32> {
+        let part = self.media_part(part_path)?;
+        if let Some(dpi) = self.dpis.get(part.part_path.as_str()) {
+            return *dpi;
+        }
+        let dpi = part.bytes().ok().and_then(|bytes| image_dpi(&bytes));
+        self.dpis.insert(part.part_path.as_str(), dpi);
+        dpi
+    }
+
     fn metafile(&mut self, media_part_path: Option<&str>) -> Option<Arc<MetafileDrawing>> {
         let part_path = media_part_path?;
         if let Some(drawing) = self.metafiles.get(part_path) {
@@ -1620,8 +1631,7 @@ impl<'a> LayoutBuilder<'a> {
                 let picture = picture.filter(|_| has_fill);
                 let dpi = picture
                     .and_then(|fill| fill.media_part_path.as_deref())
-                    .and_then(|path| self.media_part(path))
-                    .and_then(|part| image_dpi(&part.bytes().ok()?));
+                    .and_then(|path| self.media_dpi(path));
                 self.primitives
                     .push(picture_filled(primitive, picture, dpi, self.theme));
             }
@@ -1654,8 +1664,7 @@ impl<'a> LayoutBuilder<'a> {
             let picture = picture.filter(|_| !custom.no_fill);
             let dpi = picture
                 .and_then(|fill| fill.media_part_path.as_deref())
-                .and_then(|path| self.media_part(path))
-                .and_then(|part| image_dpi(&part.bytes().ok()?));
+                .and_then(|path| self.media_dpi(path));
             self.primitives
                 .push(picture_filled(primitive, picture, dpi, self.theme));
         }
@@ -1674,8 +1683,7 @@ impl<'a> LayoutBuilder<'a> {
         let picture = picture.filter(|fill| fill.media_part_path.is_some());
         let dpi = picture
             .and_then(|fill| fill.media_part_path.as_deref())
-            .and_then(|path| self.media_part(path))
-            .and_then(|part| image_dpi(&part.bytes().ok()?));
+            .and_then(|path| self.media_dpi(path));
         for mut part in parts {
             if self.slide_width > 0.0
                 && self.slide_height > 0.0
@@ -2068,8 +2076,7 @@ impl<'a> LayoutBuilder<'a> {
                 let dpi = plan
                     .picture_fill
                     .and_then(|fill| fill.media_part_path.as_deref())
-                    .and_then(|path| self.media_part(path))
-                    .and_then(|part| image_dpi(&part.bytes().ok()?));
+                    .and_then(|path| self.media_dpi(path));
                 self.primitives.push(cell_picture_filled(
                     cell_fill(object_id, cell, paint),
                     plan.picture_fill,
@@ -6120,11 +6127,11 @@ fn picture_fill_tile(picture: &PictureFill, dpi: Option<f32>) -> Option<ImageTil
     })
 }
 
-/// The resolution a PNG or JPEG declares, in dots per inch. `None` where the
-/// file names none, which reads as the 96 dpi a canvas assumes.
 /// Enough of a part to tell an EMF or WMF from its header.
 const METAFILE_SIGNATURE_BYTES: usize = 64;
 
+/// The resolution a PNG or JPEG declares, in dots per inch. `None` where the
+/// file names none, which reads as the 96 dpi a canvas assumes.
 fn image_dpi(bytes: &[u8]) -> Option<f32> {
     if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
         let mut offset = 8;

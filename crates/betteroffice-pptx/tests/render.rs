@@ -398,3 +398,26 @@ fn pictures_received_from_a_peer_render_before_save() {
     assert_eq!(rendered.skipped_images, 0);
     assert_ne!(rendered.bytes, before.bytes);
 }
+
+#[test]
+fn a_picture_filling_a_table_cell_is_read_for_the_png() {
+    let mut presentation = Presentation::open(include_bytes!(
+        "../../pptx-render/tests/fixtures/table-picture-fill.pptx"
+    ))
+    .unwrap();
+    for bold in [false, true] {
+        presentation
+            .register_font("Arial", bold, false, FONT)
+            .unwrap();
+    }
+    presentation
+        .register_fallback_font("Arial", false, false, FONT)
+        .unwrap();
+    let rendered = presentation
+        .render_png(0, &RenderOptions::default())
+        .unwrap();
+    assert_eq!(
+        rendered.skipped_images, 0,
+        "the cell picture sits inside a table primitive and still loads"
+    );
+}

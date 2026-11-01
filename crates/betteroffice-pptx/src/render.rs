@@ -20,6 +20,22 @@ pub(crate) struct RenderCaches {
     images: Mutex<ImageCache>,
 }
 
+/// The assets a primitive list draws, including those inside tables and charts.
+fn collect_asset_ids<'a>(primitives: &'a [pptx_render::Primitive], ids: &mut Vec<&'a str>) {
+    for primitive in primitives {
+        match primitive {
+            pptx_render::Primitive::Image {
+                asset_id: Some(id), ..
+            } => ids.push(id.as_str()),
+            pptx_render::Primitive::Chart { primitives, .. }
+            | pptx_render::Primitive::Table { primitives, .. } => {
+                collect_asset_ids(primitives, ids);
+            }
+            _ => {}
+        }
+    }
+}
+
 impl Presentation {
     /// Rasterizes one slide to deterministic PNG bytes. Media resolves from the
     /// package, so nothing needs registering beyond the fonts
@@ -29,17 +45,8 @@ impl Presentation {
     /// deck.
     pub fn render_png(&self, slide_index: usize, options: &RenderOptions) -> Result<RenderedPng> {
         let rendered = self.render_slide(slide_index)?;
-        let mut asset_ids: Vec<&str> = rendered
-            .display_list
-            .primitives
-            .iter()
-            .filter_map(|primitive| match primitive {
-                pptx_render::Primitive::Image {
-                    asset_id: Some(id), ..
-                } => Some(id.as_str()),
-                _ => None,
-            })
-            .collect();
+        let mut asset_ids: Vec<&str> = Vec::new();
+        collect_asset_ids(&rendered.display_list.primitives, &mut asset_ids);
         asset_ids.sort_unstable();
         asset_ids.dedup();
         let mut loaded: Vec<(&str, Vec<u8>)> = Vec::with_capacity(asset_ids.len());
