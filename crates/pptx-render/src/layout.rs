@@ -527,7 +527,7 @@ impl SlideRenderer {
         {
             let background_dpi = builder
                 .media_part(&asset_id)
-                .and_then(|part| image_dpi(&part.bytes));
+                .and_then(|part| image_dpi(&part.bytes().ok()?));
             let tile = picture_fill_tile(picture, background_dpi);
             let (crop, destination) = picture_fill_crop(picture).placement(0.0, 0.0, width, height);
             let destination = if tile.is_some() { None } else { destination };
@@ -1584,12 +1584,18 @@ impl<'a> LayoutBuilder<'a> {
             return drawing.clone();
         }
         let part = self.media_part(part_path)?;
-        if !is_metafile(&part.bytes) || part.bytes.len() > self.metafile_bytes {
+        let bytes = (part.byte_length() <= self.metafile_bytes as u64)
+            .then(|| part.prefix(METAFILE_SIGNATURE_BYTES).ok())
+            .flatten()
+            .filter(|prefix| is_metafile(prefix))
+            .and_then(|_| part.bytes().ok())
+            .filter(|bytes| bytes.len() <= self.metafile_bytes);
+        let Some(bytes) = bytes else {
             self.metafiles.insert(part.part_path.as_str(), None);
             return None;
-        }
-        self.metafile_bytes -= part.bytes.len();
-        let drawing = decode_metafile(&part.bytes).map(Arc::new);
+        };
+        self.metafile_bytes -= bytes.len();
+        let drawing = decode_metafile(&bytes).map(Arc::new);
         self.metafiles
             .insert(part.part_path.as_str(), drawing.clone());
         drawing
@@ -1615,7 +1621,7 @@ impl<'a> LayoutBuilder<'a> {
                 let dpi = picture
                     .and_then(|fill| fill.media_part_path.as_deref())
                     .and_then(|path| self.media_part(path))
-                    .and_then(|part| image_dpi(&part.bytes));
+                    .and_then(|part| image_dpi(&part.bytes().ok()?));
                 self.primitives
                     .push(picture_filled(primitive, picture, dpi, self.theme));
             }
@@ -1649,7 +1655,7 @@ impl<'a> LayoutBuilder<'a> {
             let dpi = picture
                 .and_then(|fill| fill.media_part_path.as_deref())
                 .and_then(|path| self.media_part(path))
-                .and_then(|part| image_dpi(&part.bytes));
+                .and_then(|part| image_dpi(&part.bytes().ok()?));
             self.primitives
                 .push(picture_filled(primitive, picture, dpi, self.theme));
         }
@@ -1669,7 +1675,7 @@ impl<'a> LayoutBuilder<'a> {
         let dpi = picture
             .and_then(|fill| fill.media_part_path.as_deref())
             .and_then(|path| self.media_part(path))
-            .and_then(|part| image_dpi(&part.bytes));
+            .and_then(|part| image_dpi(&part.bytes().ok()?));
         for mut part in parts {
             if self.slide_width > 0.0
                 && self.slide_height > 0.0
@@ -2063,7 +2069,7 @@ impl<'a> LayoutBuilder<'a> {
                     .picture_fill
                     .and_then(|fill| fill.media_part_path.as_deref())
                     .and_then(|path| self.media_part(path))
-                    .and_then(|part| image_dpi(&part.bytes));
+                    .and_then(|part| image_dpi(&part.bytes().ok()?));
                 self.primitives.push(cell_picture_filled(
                     cell_fill(object_id, cell, paint),
                     plan.picture_fill,
@@ -6116,6 +6122,9 @@ fn picture_fill_tile(picture: &PictureFill, dpi: Option<f32>) -> Option<ImageTil
 
 /// The resolution a PNG or JPEG declares, in dots per inch. `None` where the
 /// file names none, which reads as the 96 dpi a canvas assumes.
+/// Enough of a part to tell an EMF or WMF from its header.
+const METAFILE_SIGNATURE_BYTES: usize = 64;
+
 fn image_dpi(bytes: &[u8]) -> Option<f32> {
     if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
         let mut offset = 8;
@@ -10782,11 +10791,11 @@ mod tests {
         let mut package = pptx_parse::parse_pptx(FIXTURE).unwrap();
         let session = DeckSession::open(FIXTURE, 8_100).unwrap();
         let snapshot = session.snapshot().unwrap();
-        package.media.push(pptx_parse::MediaPart {
-            part_path: "ppt/media/logo.emf".to_owned(),
-            content_type: "image/x-emf".to_owned(),
-            bytes: media,
-        });
+        package.media.push(pptx_parse::MediaPart::new(
+            "ppt/media/logo.emf".to_owned(),
+            "image/x-emf".to_owned(),
+            media,
+        ));
         let picture = pptx_parse::Picture {
             aspect_ratio_locked: false,
             effects: Vec::new(),

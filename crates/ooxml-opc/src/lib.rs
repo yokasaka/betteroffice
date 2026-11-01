@@ -163,13 +163,24 @@ pub fn rezip_parts_borrowed<S: AsRef<[u8]>>(entries: &[(String, S)]) -> Result<V
 }
 
 fn validate_parts<S: AsRef<[u8]>>(entries: &[(String, S)]) -> Result<(), String> {
-    if entries.len() > MAX_ENTRY_COUNT {
+    validate_part_sizes(
+        entries
+            .iter()
+            .map(|(name, bytes)| (name.as_str(), bytes.as_ref().len() as u64)),
+        entries.len(),
+    )
+}
+
+fn validate_part_sizes<'a>(
+    entries: impl Iterator<Item = (&'a str, u64)>,
+    count: usize,
+) -> Result<(), String> {
+    if count > MAX_ENTRY_COUNT {
         return Err(format!("zip entry count exceeds {MAX_ENTRY_COUNT}"));
     }
     let mut seen_paths = HashSet::new();
     let mut total = 0_u64;
-    for (name, bytes) in entries {
-        let bytes = bytes.as_ref();
+    for (name, size) in entries {
         let Some(security_path) = normalized_security_path(name) else {
             return Err(format!("unsafe zip entry path: {name}"));
         };
@@ -177,7 +188,7 @@ fn validate_parts<S: AsRef<[u8]>>(entries: &[(String, S)]) -> Result<(), String>
             return Err(format!("duplicate normalized zip entry path: {name}"));
         }
         total = total
-            .checked_add(bytes.len() as u64)
+            .checked_add(size)
             .ok_or_else(|| format!("inflated size exceeds {MAX_TOTAL_UNCOMPRESSED_BYTES} bytes"))?;
         if total > MAX_TOTAL_UNCOMPRESSED_BYTES {
             return Err(format!(
@@ -212,6 +223,11 @@ pub struct SourceContainer(std::sync::Arc<[u8]>);
 impl SourceContainer {
     pub fn new(bytes: Vec<u8>) -> Self {
         Self(bytes.into())
+    }
+
+    /// Shares `bytes`, which a [`RetainedPackage`] may also hold, without copying them.
+    pub fn shared(bytes: std::sync::Arc<[u8]>) -> Self {
+        Self(bytes)
     }
 
     pub fn as_bytes(&self) -> &[u8] {
@@ -352,6 +368,61 @@ pub fn rezip_parts_preserving<S: AsRef<[u8]>>(
     Ok(cursor.into_inner())
 }
 
+/// As [`rezip_parts_preserving`], where a `None` entry copies the source member of
+/// that name as it is, without inflating it.
+pub fn rezip_parts_retaining<S: AsRef<[u8]>>(
+    entries: &[(String, Option<S>)],
+    source: &[u8],
+) -> Result<Vec<u8>, String> {
+    if entries.iter().all(|(_, bytes)| bytes.is_some()) {
+        let entries: Vec<(String, &[u8])> = entries
+            .iter()
+            .filter_map(|(name, bytes)| Some((name.clone(), bytes.as_ref()?.as_ref())))
+            .collect();
+        return rezip_parts_preserving(&entries, source);
+    }
+    let mut archive =
+        zip::ZipArchive::new(Cursor::new(source)).map_err(|e| format!("bad zip: {e}"))?;
+    let mut sizes = Vec::with_capacity(entries.len());
+    for (name, bytes) in entries {
+        let size = match bytes {
+            Some(bytes) => bytes.as_ref().len() as u64,
+            None => archive
+                .by_name(name)
+                .map_err(|e| format!("retained part {name}: {e}"))?
+                .size(),
+        };
+        sizes.push((name.as_str(), size));
+    }
+    validate_part_sizes(sizes.into_iter(), entries.len())?;
+
+    let mut cursor = Cursor::new(Vec::new());
+    {
+        let mut writer = zip::ZipWriter::new(&mut cursor);
+        for (name, bytes) in entries {
+            progress::pulse();
+            match bytes {
+                Some(bytes) => {
+                    let bytes = bytes.as_ref();
+                    if !copy_unchanged_member(&mut archive, &mut writer, name, bytes)? {
+                        write_deflated(&mut writer, name, bytes)?;
+                    }
+                }
+                None => {
+                    let file = archive
+                        .by_name(name)
+                        .map_err(|e| format!("retained part {name}: {e}"))?;
+                    writer
+                        .raw_copy_file_rename(file, name)
+                        .map_err(|e| format!("copy {name}: {e}"))?;
+                }
+            }
+        }
+        writer.finish().map_err(|e| format!("finish: {e}"))?;
+    }
+    Ok(cursor.into_inner())
+}
+
 /// Copy `name`'s compressed source member into `writer`; false means re-deflate.
 fn copy_unchanged_member(
     archive: &mut zip::ZipArchive<Cursor<&[u8]>>,
@@ -463,6 +534,42 @@ mod tests {
         bytes[end - 2..].copy_from_slice(&(comment.len() as u16).to_le_bytes());
         bytes.extend_from_slice(comment);
         bytes
+    }
+
+    #[test]
+    fn retained_parts_copy_their_source_members_verbatim() {
+        let parts = sample();
+        let source = rezip_parts(&parts).unwrap();
+        let entries: Vec<(String, Option<&[u8]>)> = vec![
+            (parts[0].0.clone(), Some(b"<Types/>".as_slice())),
+            (parts[1].0.clone(), Some(b"<w:changed/>".as_slice())),
+            (parts[2].0.clone(), None),
+        ];
+        let saved = rezip_parts_retaining(&entries, &source).unwrap();
+        let back = unzip_parts(&saved).unwrap();
+        assert_eq!(back[0], parts[0]);
+        assert_eq!(back[1].1, b"<w:changed/>");
+        assert_eq!(back[2], parts[2]);
+        let mut original = zip::ZipArchive::new(Cursor::new(source.as_slice())).unwrap();
+        let mut copied = zip::ZipArchive::new(Cursor::new(saved.as_slice())).unwrap();
+        for name in [&parts[0].0, &parts[2].0] {
+            let (mut before, mut after) = (Vec::new(), Vec::new());
+            let index = original.index_for_name(name).unwrap();
+            original
+                .by_index_raw(index)
+                .unwrap()
+                .read_to_end(&mut before)
+                .unwrap();
+            let index = copied.index_for_name(name).unwrap();
+            copied
+                .by_index_raw(index)
+                .unwrap()
+                .read_to_end(&mut after)
+                .unwrap();
+            assert_eq!(before, after);
+        }
+        let missing = [("ppt/media/absent.png".to_owned(), None::<&[u8]>)];
+        assert!(rezip_parts_retaining(&missing, &source).is_err());
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 pub use ooxml_drawingml::ShapeStyle;
@@ -77,11 +78,16 @@ pub struct PptxPackage {
 }
 
 impl PptxPackage {
+    /// `None` also for a part that stays compressed in the source package.
     pub fn part_bytes(&self, path: &str) -> Option<&[u8]> {
         self.parts
             .iter()
             .find(|part| part.path == path)
-            .map(|part| part.bytes.as_slice())
+            .and_then(|part| part.bytes.as_deref())
+    }
+
+    pub(crate) fn has_part(&self, path: &str) -> bool {
+        self.parts.iter().any(|part| part.path == path)
     }
 
     /// Authored other-style levels, including explicitly empty levels when source is attached.
@@ -138,7 +144,7 @@ impl PptxPackage {
         let Some(part) = self.parts.iter_mut().find(|part| part.path == path) else {
             return false;
         };
-        part.bytes = bytes;
+        part.bytes = Some(bytes);
         true
     }
 }
@@ -146,7 +152,8 @@ impl PptxPackage {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PackagePart {
     pub path: String,
-    pub bytes: Vec<u8>,
+    /// `None` while the part stays compressed in the source package.
+    pub bytes: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -274,29 +281,131 @@ pub struct ChartPart {
     pub chart: ChartSpace,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaPart {
     pub part_path: String,
     pub content_type: String,
+    /// Absent while the part stays compressed in its source package, and from
+    /// a package recovered from an update seeded with such a part.
     #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
         serialize_with = "serialize_media_bytes",
         deserialize_with = "deserialize_media_bytes"
     )]
-    pub bytes: Vec<u8>,
+    bytes: Option<Vec<u8>>,
+    #[serde(skip)]
+    retained: Option<RetainedMedia>,
 }
 
+#[derive(Clone, Debug)]
+struct RetainedMedia {
+    package: ooxml_opc::RetainedPackage,
+    position: usize,
+    size: u64,
+}
+
+impl MediaPart {
+    pub fn new(part_path: String, content_type: String, bytes: Vec<u8>) -> Self {
+        Self {
+            part_path,
+            content_type,
+            bytes: Some(bytes),
+            retained: None,
+        }
+    }
+
+    /// The `position`th part of `package`, inflated only when read.
+    pub(crate) fn retained(
+        part_path: String,
+        content_type: String,
+        package: ooxml_opc::RetainedPackage,
+        position: usize,
+        size: u64,
+    ) -> Self {
+        Self {
+            part_path,
+            content_type,
+            bytes: None,
+            retained: Some(RetainedMedia {
+                package,
+                position,
+                size,
+            }),
+        }
+    }
+
+    /// The part's bytes, inflated from the source package when it stays compressed there.
+    pub fn bytes(&self) -> Result<Cow<'_, [u8]>, String> {
+        if let Some(bytes) = &self.bytes {
+            return Ok(Cow::Borrowed(bytes));
+        }
+        match &self.retained {
+            Some(retained) => retained.package.read(retained.position).map(Cow::Owned),
+            None => Err(format!(
+                "{} is not held without its source package",
+                self.part_path
+            )),
+        }
+    }
+
+    /// At most the first `len` bytes of the part.
+    pub fn prefix(&self, len: usize) -> Result<Cow<'_, [u8]>, String> {
+        if let Some(bytes) = &self.bytes {
+            return Ok(Cow::Borrowed(&bytes[..len.min(bytes.len())]));
+        }
+        match &self.retained {
+            Some(retained) => retained
+                .package
+                .read_prefix(retained.position, len)
+                .map(Cow::Owned),
+            None => self.bytes(),
+        }
+    }
+
+    /// Reads a part kept compressed into memory, so serializing it writes its bytes.
+    pub fn inflate(&mut self) -> Result<(), String> {
+        if self.bytes.is_none() {
+            let bytes = self.bytes()?.into_owned();
+            self.bytes = Some(bytes);
+        }
+        Ok(())
+    }
+
+    /// The inflated size, declared by the source package for a part that stays compressed.
+    pub fn byte_length(&self) -> u64 {
+        match (&self.bytes, &self.retained) {
+            (Some(bytes), _) => bytes.len() as u64,
+            (None, Some(retained)) => retained.size,
+            (None, None) => 0,
+        }
+    }
+}
+
+impl PartialEq for MediaPart {
+    fn eq(&self, other: &Self) -> bool {
+        self.part_path == other.part_path
+            && self.content_type == other.content_type
+            && self.byte_length() == other.byte_length()
+            && self.bytes() == other.bytes()
+    }
+}
+
+impl Eq for MediaPart {}
+
 /// Writes base64: a JSON integer array inflates the payload about fourfold.
-fn serialize_media_bytes<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
+fn serialize_media_bytes<S>(bytes: &Option<Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
     use base64::Engine as _;
+    let bytes = bytes.as_deref().unwrap_or_default();
     serializer.serialize_str(&base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
 /// Also accepts the integer arrays written before schema 2.2.
-fn deserialize_media_bytes<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+fn deserialize_media_bytes<'de, D>(deserializer: D) -> Result<Option<Vec<u8>>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -313,8 +422,9 @@ where
     match Bytes::deserialize(deserializer)? {
         Bytes::Base64(encoded) => base64::engine::general_purpose::STANDARD
             .decode(encoded)
+            .map(Some)
             .map_err(D::Error::custom),
-        Bytes::Integers(bytes) => Ok(bytes),
+        Bytes::Integers(bytes) => Ok(Some(bytes)),
     }
 }
 

@@ -24,28 +24,41 @@ impl Presentation {
     /// Rasterizes one slide to deterministic PNG bytes. Media resolves from the
     /// package, so nothing needs registering beyond the fonts
     /// [`Presentation::register_font`] took; a picture the backend cannot draw
-    /// is skipped and counted rather than failing the render. Glyph outlines and
-    /// decoded images are cached on the deck.
+    /// is skipped and counted rather than failing the render. Only the media the
+    /// slide draws is read. Glyph outlines and decoded images are cached on the
+    /// deck.
     pub fn render_png(&self, slide_index: usize, options: &RenderOptions) -> Result<RenderedPng> {
         let rendered = self.render_slide(slide_index)?;
-        let mut images: AssetMap<'_> = self
-            .media()
-            .iter()
-            .map(|part| (part.part_path.as_str(), part.bytes.as_slice()))
-            .collect();
-        let pending: Vec<(&str, Vec<u8>)> = rendered
+        let mut asset_ids: Vec<&str> = rendered
             .display_list
             .primitives
             .iter()
             .filter_map(|primitive| match primitive {
                 pptx_render::Primitive::Image {
                     asset_id: Some(id), ..
-                } if id.starts_with("pending-media:") => Some(id.as_str()),
+                } => Some(id.as_str()),
                 _ => None,
             })
-            .map(|id| self.media_bytes(id).map(|bytes| (id, bytes)))
-            .collect::<Result<_>>()?;
-        images.extend(pending.iter().map(|(id, bytes)| (*id, bytes.as_slice())));
+            .collect();
+        asset_ids.sort_unstable();
+        asset_ids.dedup();
+        let mut loaded: Vec<(&str, Vec<u8>)> = Vec::with_capacity(asset_ids.len());
+        for id in asset_ids {
+            if id.starts_with("pending-media:") {
+                loaded.push((id, self.media_bytes(id)?));
+            } else if let Some(bytes) = self
+                .media()
+                .iter()
+                .find(|part| part.part_path == id)
+                .and_then(|part| part.bytes().ok())
+            {
+                loaded.push((id, bytes.into_owned()));
+            }
+        }
+        let images: AssetMap<'_> = loaded
+            .iter()
+            .map(|(id, bytes)| (*id, bytes.as_slice()))
+            .collect();
         let resources = RenderResources::new(self.renderer().fonts(), &images)
             .with_label_font(self.renderer().fallback_font());
         let mut glyphs = self

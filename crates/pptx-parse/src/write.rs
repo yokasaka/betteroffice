@@ -555,12 +555,16 @@ pub fn write_pptx_with_edits(
             continue;
         }
         match replacements.remove(&part.path) {
-            Some(bytes) => parts.push((part.path.clone(), bytes)),
+            Some(bytes) => parts.push((part.path.clone(), Some(bytes))),
             None => parts.push((part.path.clone(), part.bytes.clone())),
         }
     }
-    parts.extend(new_parts);
-    ooxml_opc::rezip_parts_preserving(&parts, package.source_container.as_bytes())
+    parts.extend(
+        new_parts
+            .into_iter()
+            .map(|(path, bytes)| (path, Some(bytes))),
+    );
+    ooxml_opc::rezip_parts_retaining(&parts, package.source_container.as_bytes())
         .map_err(PptxError::Container)
 }
 
@@ -1277,7 +1281,7 @@ impl PartSink<'_> {
     }
 
     fn store(&mut self, path: &str, bytes: Vec<u8>) {
-        if self.package.part_bytes(path).is_some() {
+        if self.package.has_part(path) {
             self.replacements.insert(path.to_owned(), bytes);
             return;
         }

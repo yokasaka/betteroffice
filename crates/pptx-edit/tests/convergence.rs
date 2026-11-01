@@ -57,7 +57,41 @@ fn shared_update_opens_byte_identical_state_for_distinct_clients() {
     );
     assert_eq!(left.encode_state_as_update_v1(), seed);
     assert_eq!(right.encode_state_as_update_v1(), seed);
-    assert_eq!(left.package().media, source.package().media);
+}
+
+#[test]
+fn an_update_lists_media_without_carrying_its_bytes() {
+    use base64::Engine as _;
+
+    let source = DeckSession::open(FIXTURE, 101).unwrap();
+    let seed = source.encode_state_as_update_v1();
+    let media = source.package().media[0].bytes().unwrap().into_owned();
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&media);
+    assert!(
+        !seed
+            .windows(encoded.len())
+            .any(|window| window == encoded.as_bytes())
+    );
+
+    let listed = |session: &DeckSession| {
+        session
+            .package()
+            .media
+            .iter()
+            .map(|part| (part.part_path.clone(), part.content_type.clone()))
+            .collect::<Vec<_>>()
+    };
+    let bare = DeckSession::open_from_update(&seed, 202).unwrap();
+    assert_eq!(listed(&bare), listed(&source));
+    assert!(
+        bare.package()
+            .media
+            .iter()
+            .all(|part| part.bytes().is_err())
+    );
+
+    let joined = DeckSession::open_from_update_with_source(&seed, FIXTURE, 303).unwrap();
+    assert_eq!(joined.package().media, source.package().media);
 }
 
 #[test]

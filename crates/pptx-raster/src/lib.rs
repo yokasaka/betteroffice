@@ -75,9 +75,10 @@ pub const MAX_SLIDE_IMAGE_PIXELS: u64 = 67_108_864;
 pub const MAX_IMAGE_BYTES: u64 = 268_435_456;
 /// The same, summed across every image one slide decodes.
 pub const MAX_SLIDE_IMAGE_BYTES: u64 = 536_870_912;
-/// Decoded pixmaps one [`ImageCache`] retains, at the bytes one slide's decodes
-/// may cost. Past the cap the oldest insertion evicts first.
-const MAX_CACHED_IMAGE_BYTES: u64 = MAX_SLIDE_IMAGE_BYTES;
+/// Decoded pixmaps one [`ImageCache`] retains across slides: enough for the
+/// pictures a deck repeats, not for every photo it holds. Past the cap the
+/// oldest insertion evicts first.
+const MAX_CACHED_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
 /// Scratch pixels every shadow on one slide may blur between them, eight full surfaces.
 /// A slide may carry 100_000 shapes and each shadow blurs its own buffer six times over.
 pub const MAX_SHADOW_PIXELS: u64 = 134_217_728;

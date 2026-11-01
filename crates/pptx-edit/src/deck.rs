@@ -824,8 +824,10 @@ impl DeckSession {
             .media
             .iter()
             .find(|media| media.part_path == asset_id)
-            .map(|media| media.bytes.clone())
-            .ok_or_else(|| EditError::InvalidState("media part was not found".to_owned()))
+            .ok_or_else(|| EditError::InvalidState("media part was not found".to_owned()))?
+            .bytes()
+            .map(std::borrow::Cow::into_owned)
+            .map_err(EditError::InvalidState)
     }
 
     /// `save` mints the media part, content-type default and relationship.

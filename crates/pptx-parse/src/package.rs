@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 
 use ooxml_drawingml::{ColorMap, TableStyleList, Theme};
 
@@ -104,7 +105,30 @@ fn parse_package(
     limits: &ParseLimits,
     shape_elements: ShapeElements,
 ) -> Result<PptxPackage, PptxError> {
-    let source_parts = ooxml_opc::unzip_parts(data).map_err(PptxError::Container)?;
+    let source: Arc<[u8]> = Arc::from(data);
+    let retained =
+        ooxml_opc::RetainedPackage::new(Arc::clone(&source)).map_err(PptxError::Container)?;
+    let kept = retained
+        .parts()
+        .filter(|(path, _)| is_media_path(path))
+        .fold(0_u64, |total, (_, size)| total.saturating_add(size));
+    if kept > ooxml_opc::MAX_TOTAL_UNCOMPRESSED_BYTES {
+        return Err(PptxError::Container(format!(
+            "inflated size exceeds {} bytes",
+            ooxml_opc::MAX_TOTAL_UNCOMPRESSED_BYTES
+        )));
+    }
+    let source_parts = ooxml_opc::unzip_parts_where(
+        data,
+        ooxml_opc::MAX_TOTAL_UNCOMPRESSED_BYTES - kept,
+        |path| !is_media_path(path),
+    )
+    .map_err(PptxError::Container)?;
+    let media_paths: HashSet<&str> = retained
+        .parts()
+        .map(|(path, _)| path)
+        .filter(|path| is_media_path(path))
+        .collect();
     let parts: HashMap<&str, &[u8]> = source_parts
         .iter()
         .map(|(path, bytes)| (path.as_str(), bytes.as_slice()))
@@ -154,6 +178,7 @@ fn parse_package(
             &root,
             slide_relationships,
             &parts,
+            &media_paths,
             &relationships,
             &mut vml_budget,
         );
@@ -330,13 +355,18 @@ fn parse_package(
     let content_types = parse_content_types(&parts, &mut budget)?;
     let mut diagram_drawings =
         parse_diagram_drawings(&parts, &slides, &relationships, &mut budget, shape_elements);
-    let media = source_parts
-        .iter()
-        .filter(|(path, _)| path.starts_with("ppt/media/"))
-        .map(|(path, bytes)| MediaPart {
-            part_path: path.clone(),
-            content_type: content_type_for(path, &content_types),
-            bytes: bytes.clone(),
+    let media = retained
+        .parts()
+        .enumerate()
+        .filter(|(_, (path, _))| is_media_path(path))
+        .map(|(position, (path, size))| {
+            MediaPart::retained(
+                path.to_owned(),
+                content_type_for(path, &content_types),
+                retained.clone(),
+                position,
+                size,
+            )
         })
         .collect();
     for slide in &mut slides {
@@ -366,9 +396,13 @@ fn parse_package(
     for drawing in &mut diagram_drawings {
         normalize_shape_columns(&mut drawing.shapes, &[], &[]);
     }
-    let parts = source_parts
-        .into_iter()
-        .map(|(path, bytes)| PackagePart { path, bytes })
+    let mut inflated: HashMap<String, Vec<u8>> = source_parts.into_iter().collect();
+    let parts = retained
+        .parts()
+        .map(|(path, _)| PackagePart {
+            path: path.to_owned(),
+            bytes: inflated.remove(path),
+        })
         .collect();
     Ok(PptxPackage {
         presentation,
@@ -385,7 +419,7 @@ fn parse_package(
         comment_flavor: deck_comments.flavor,
         relationships,
         parts,
-        source_container: ooxml_opc::SourceContainer::new(data.to_vec()),
+        source_container: ooxml_opc::SourceContainer::shared(source),
         shape_elements: if has_connectors {
             shape_elements
         } else {
@@ -467,10 +501,15 @@ pub fn write_pptx(package: &PptxPackage) -> Result<Vec<u8>, PptxError> {
     let parts = package
         .parts
         .iter()
-        .map(|part| (part.path.clone(), part.bytes.clone()))
+        .map(|part| (part.path.clone(), part.bytes.as_deref()))
         .collect::<Vec<_>>();
-    ooxml_opc::rezip_parts_preserving(&parts, package.source_container.as_bytes())
+    ooxml_opc::rezip_parts_retaining(&parts, package.source_container.as_bytes())
         .map_err(PptxError::Container)
+}
+
+/// Media stays compressed in the source package until read: no parser reads it as markup.
+fn is_media_path(path: &str) -> bool {
+    path.starts_with("ppt/media/")
 }
 
 fn parse_package_relationships(
@@ -539,6 +578,7 @@ fn parse_vml_previews(
     slide: &XmlElement,
     slide_relationships: &[Relationship],
     parts: &HashMap<&str, &[u8]>,
+    media_paths: &HashSet<&str>,
     relationships: &BTreeMap<String, Vec<Relationship>>,
     budget: &mut ParseBudget<'_>,
 ) -> BTreeMap<String, PictureFill> {
@@ -588,7 +628,7 @@ fn parse_vml_previews(
                 .iter()
                 .find(|relationship| relationship.id == id)
                 .and_then(|relationship| relationship.resolved_target.as_deref())
-                .filter(|path| path.starts_with("ppt/media/") && parts.contains_key(path))
+                .filter(|path| media_paths.contains(path))
             else {
                 continue;
             };
@@ -1280,6 +1320,50 @@ mod tests {
     }
 
     #[test]
+    fn media_stays_compressed_until_read() {
+        let package = parse_pptx(FIXTURE).unwrap();
+        let eager = ooxml_opc::unzip_parts(FIXTURE).unwrap();
+        let (path, bytes) = eager.iter().find(|(path, _)| is_media_path(path)).unwrap();
+        assert!(package.has_part(path));
+        assert_eq!(package.part_bytes(path), None);
+        let media = package
+            .media
+            .iter()
+            .find(|media| &media.part_path == path)
+            .unwrap();
+        assert_eq!(media.byte_length(), bytes.len() as u64);
+        assert_eq!(media.bytes().unwrap().as_ref(), bytes.as_slice());
+        assert_eq!(media.prefix(4).unwrap().as_ref(), &bytes[..4]);
+        assert_eq!(media.prefix(usize::MAX).unwrap().as_ref(), bytes.as_slice());
+        let saved = parse_pptx(&write_pptx(&package).unwrap()).unwrap();
+        assert_eq!(saved.media, package.media);
+    }
+
+    #[test]
+    fn serialized_media_carries_its_bytes_only_once_inflated() {
+        use base64::Engine as _;
+
+        let package = parse_pptx(FIXTURE).unwrap();
+        let media = &package.media[0];
+        let expected = media.bytes().unwrap().into_owned();
+        let compressed = serde_json::to_value(media).unwrap();
+        assert!(compressed.get("bytes").is_none());
+        let recovered: MediaPart = serde_json::from_value(compressed).unwrap();
+        assert_eq!(recovered.byte_length(), 0);
+        assert!(recovered.bytes().is_err());
+
+        let mut inflated = media.clone();
+        inflated.inflate().unwrap();
+        let written = serde_json::to_value(&inflated).unwrap();
+        assert_eq!(
+            written["bytes"],
+            base64::engine::general_purpose::STANDARD.encode(&expected)
+        );
+        let recovered: MediaPart = serde_json::from_value(written).unwrap();
+        assert_eq!(recovered, *media);
+    }
+
+    #[test]
     fn refuses_packages_that_are_not_presentations() {
         let presentation = |parts: &Vec<(String, Vec<u8>)>| {
             String::from_utf8(
@@ -1475,7 +1559,16 @@ mod tests {
             package
                 .parts
                 .iter()
-                .map(|part| (part.path.clone(), part.bytes.clone()))
+                .map(|part| {
+                    let bytes = part.bytes.clone().unwrap_or_else(|| {
+                        let media = package
+                            .media
+                            .iter()
+                            .find(|media| media.part_path == part.path);
+                        media.unwrap().bytes().unwrap().into_owned()
+                    });
+                    (part.path.clone(), bytes)
+                })
                 .collect::<Vec<_>>()
         );
     }
