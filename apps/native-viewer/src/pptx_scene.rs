@@ -223,7 +223,9 @@ impl PptxImages {
             .media
             .iter()
             .map(|part| {
-                let image = image::load_from_memory(&part.bytes)
+                let image = part
+                    .bytes()
+                    .and_then(|bytes| image::load_from_memory(&bytes).map_err(|error| error.to_string()))
                     .map(|image| {
                         let rgba = image.into_rgba8();
                         let (width, height) = rgba.dimensions();

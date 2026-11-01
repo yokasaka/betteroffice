@@ -237,6 +237,7 @@ pub fn render_slide_shared(
         pixmap.fill_rect(rect, &paint, base, None);
     }
 
+    images.this_slide.clear();
     let mut painter = Painter {
         pixmap: &mut pixmap,
         scale: options.scale,
@@ -254,6 +255,7 @@ pub fn render_slide_shared(
         painter.paint(primitive, base, None)?;
     }
     let skipped_images = painter.skipped_images;
+    images.this_slide.clear();
 
     Ok(RenderedSlide {
         bytes: encode_png(pixmap, width, height)?,
@@ -1330,6 +1332,9 @@ pub struct ImageCache {
     order: VecDeque<ImageKey>,
     retained: u64,
     cap: u64,
+    /// Every decode of the slide being drawn, so a repeat reference never
+    /// decodes (and charges the slide budget) again, whatever the cap kept.
+    this_slide: HashMap<ImageKey, DecodedImage>,
 }
 
 type ImageKey = (u64, u64);
@@ -1349,6 +1354,7 @@ impl Default for ImageCache {
             order: VecDeque::new(),
             retained: 0,
             cap: MAX_CACHED_IMAGE_BYTES,
+            this_slide: HashMap::new(),
         }
     }
 }
@@ -1363,10 +1369,11 @@ impl ImageCache {
         effects: &[pptx_render::ImageEffect],
         budget: &mut ImageBudget,
     ) -> Option<DecodedImage> {
-        if let Some(image) = self.decoded.get(&key) {
+        if let Some(image) = self.decoded.get(&key).or_else(|| self.this_slide.get(&key)) {
             return Some(image.clone());
         }
         let image = budget.decode(bytes, effects)?;
+        self.this_slide.insert(key, image.clone());
         self.remember(key, image.clone());
         Some(image)
     }
@@ -1806,6 +1813,32 @@ mod tests {
             budget.pixels > 0,
             "each miss still charges the slide budget"
         );
+    }
+
+    #[test]
+    fn a_decode_past_the_cache_cap_still_serves_repeats_within_its_slide() {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, 2, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&[3, 167, 223, 128, 255, 255, 255, 0])
+                .unwrap();
+        }
+        let mut cache = ImageCache {
+            cap: 0,
+            ..ImageCache::default()
+        };
+        let mut budget = ImageBudget::default();
+        let key = image_key("big.png", &bytes, &[]);
+        cache.decode(key, &bytes, &[], &mut budget).unwrap();
+        let spent = budget.pixels;
+        cache.decode(key, &bytes, &[], &mut budget).unwrap();
+        assert!(cache.decoded.is_empty(), "past the cap nothing is retained");
+        assert_eq!(budget.pixels, spent, "a repeat reference is not charged");
     }
 
     #[test]
