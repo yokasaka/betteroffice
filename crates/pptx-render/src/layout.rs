@@ -9619,7 +9619,12 @@ mod tests {
         assert_eq!(lines[0].end, 2);
         let x = lines[0].x + 150.0;
         let y = lines[0].y + lines[0].height / 2.0;
-        assert_eq!(nearest_caret(lines, x, y), 1);
+        let slide = text_columns_on_the_slide(None, &["i", "a considerably longer line"]);
+        assert_eq!(text_columns_lines(&slide), lines);
+        assert!(matches!(
+            slide.hit_test(x, y),
+            Some(HitTestResult::Text { position: 1, .. })
+        ));
     }
 
     #[test]
@@ -9659,20 +9664,47 @@ mod tests {
     fn text_columns_hit_test_finds_a_caret_in_column_two() {
         let rendered = text_columns_slide(text_columns_body());
         let lines = text_columns_lines(&rendered);
-        assert_eq!(
-            nearest_caret(lines, 110.0, lines[0].y + lines[0].height / 2.0),
-            lines[2].start
-        );
+        let slide =
+            text_columns_on_the_slide(Some(2), &["first", "second", "third", "fourth", "fifth"]);
+        assert_eq!(text_columns_lines(&slide), lines);
+        assert!(matches!(
+            slide.hit_test(110.0, lines[0].y + lines[0].height / 2.0),
+            Some(HitTestResult::Text { position, .. }) if position == lines[2].start
+        ));
     }
 
-    fn nearest_caret(lines: &[PositionedTextLine], x: f32, y: f32) -> u32 {
-        nearest_line(lines, x, y)
-            .unwrap()
-            .caret_stops
+    fn text_columns_on_the_slide(columns: Option<u32>, lines: &[&str]) -> RenderedSlide {
+        let mut source = pptx_parse::parse_pptx(FIXTURE).unwrap();
+        let columns = columns
+            .map(|count| format!(r#" numCol="{count}" spcCol="95250""#))
+            .unwrap_or_default();
+        let run = |text: &str| {
+            format!(
+                r#"<a:r><a:rPr lang="en-US" sz="1200"><a:latin typeface="Arial"/></a:rPr><a:t>{text}</a:t></a:r>"#
+            )
+        };
+        let runs = lines
             .iter()
-            .min_by(|left, right| (left.x - x).abs().total_cmp(&(right.x - x).abs()))
+            .map(|text| run(text))
+            .collect::<Vec<_>>()
+            .join("<a:br/>");
+        let shape = format!(
+            r#"<p:sp><p:nvSpPr><p:cNvPr id="9002" name="Columns"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="2000250" cy="428625"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr><p:txBody><a:bodyPr lIns="95250" tIns="47625" rIns="95250" bIns="47625" anchor="t"{columns}/><a:lstStyle/><a:p><a:pPr><a:lnSpc><a:spcPts val="1200"/></a:lnSpc></a:pPr>{runs}</a:p></p:txBody></p:sp>"#
+        );
+        let slide =
+            std::str::from_utf8(source.part_bytes("ppt/slides/slide1.xml").unwrap()).unwrap();
+        let start = slide.find("<p:sp>").unwrap();
+        let end = slide.find("</p:spTree>").unwrap();
+        let slide = format!("{}{shape}{}", &slide[..start], &slide[end..]);
+        assert!(source.replace_part("ppt/slides/slide1.xml", slide.into_bytes()));
+        let bytes = pptx_parse::write_pptx(&source).unwrap();
+        let session = DeckSession::open(&bytes, 8_013).unwrap();
+        let mut package = session.package().clone();
+        package.masters[0].shapes.clear();
+        package.layouts[0].shapes.clear();
+        renderer()
+            .layout_slide(&package, &session.snapshot().unwrap(), 0)
             .unwrap()
-            .position
     }
 
     #[test]
