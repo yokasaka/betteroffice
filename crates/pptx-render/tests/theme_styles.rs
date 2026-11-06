@@ -175,14 +175,20 @@ fn master_shapes_render_theme_fills() {
         .iter()
         .filter_map(|p| match p {
             Primitive::Shape {
-                shape_id: Some(id),
+                shape_id,
+                name,
                 fill: Some(Paint::Solid { color }),
                 ..
-            } => Some((id.split(':').next().unwrap(), color.as_str())),
+            } => Some((
+                shape_id
+                    .as_deref()
+                    .map_or(name.as_str(), |id| id.split(':').next().unwrap()),
+                color.as_str(),
+            )),
             _ => None,
         })
         .collect();
-    assert!(fills.contains(&("master", "#000000")));
+    assert!(fills.contains(&("Rectangle 6", "#000000")));
     assert!(fills.contains(&("slide", "#FF0000")));
     assert_eq!(
         shape(&list, "Oval 3").1,
