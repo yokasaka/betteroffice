@@ -560,6 +560,8 @@ impl SlideRenderer {
         // master's, because the master reaches the slide through the layout.
         let show_layout = parsed_slide.is_none_or(|slide| slide.show_master_shapes);
         let show_master = show_layout && layout.is_none_or(|layout| layout.show_master_shapes);
+        let inherited_primitives = builder.primitives.len();
+        let inherited_hit_regions = builder.hit_regions.len();
         if show_master && let Some(master) = master {
             for (index, shape) in master.shapes.iter().enumerate() {
                 if node_placeholder(shape).is_none() {
@@ -584,6 +586,8 @@ impl SlideRenderer {
                 }
             }
         }
+        detach_shape_ids(&mut builder.primitives[inherited_primitives..]);
+        builder.hit_regions.truncate(inherited_hit_regions);
         for shape in &deck_slide.shapes {
             builder.render_snapshot_shape(shape, root_space)?;
         }
@@ -735,6 +739,36 @@ impl SlideRenderer {
             widths: metrics.filter(|metrics| !runs_at_own_widths(&self.fonts, face.id, metrics)),
             line: metrics.filter(|metrics| !sits_on_own_baseline(&self.fonts, face.id, metrics)),
             ..face.clone()
+        }
+    }
+}
+
+/// Layout and master decoration is painted but is not a slide object.
+fn detach_shape_ids(primitives: &mut [Primitive]) {
+    for primitive in primitives {
+        match primitive {
+            Primitive::Shape { shape_id, .. }
+            | Primitive::Image { shape_id, .. }
+            | Primitive::Placeholder { shape_id, .. } => *shape_id = None,
+            Primitive::TextBox {
+                shape_id, story_id, ..
+            } => {
+                *shape_id = None;
+                *story_id = None;
+            }
+            Primitive::Chart {
+                shape_id,
+                primitives,
+                ..
+            }
+            | Primitive::Table {
+                shape_id,
+                primitives,
+                ..
+            } => {
+                *shape_id = None;
+                detach_shape_ids(primitives);
+            }
         }
     }
 }
@@ -8410,8 +8444,9 @@ mod tests {
         assert_eq!(deck.slides.len(), 3);
         let master = &package.masters[0];
         let layout = &package.layouts[0];
-        let master_probe = format!("master:{}:{}", master.part_path, master.shapes.len() - 1);
-        let layout_probe = format!("layout:{}:{}", layout.part_path, layout.shapes.len() - 1);
+        let master_probe = node_base(master.shapes.last().unwrap()).id;
+        let layout_probe = node_base(layout.shapes.last().unwrap()).id;
+        assert_ne!(master_probe, layout_probe);
         let slide_probe = deck.slides[1].shapes.last().unwrap();
         assert_eq!(slide_probe.text_stories[0].plain_text(), "77");
 
@@ -8429,7 +8464,7 @@ mod tests {
             let number = (i64::from(first) + index as i64).to_string();
             let number = number.as_str();
             let rendered = renderer.layout_slide(package, &deck, index).unwrap();
-            let (runs, line) = drawn_text(&rendered, &master_probe);
+            let (runs, line) = drawn_text(&rendered, None, master_probe);
             assert_eq!(
                 runs.iter().map(|run| run.text.as_str()).collect::<Vec<_>>(),
                 [number, "|", "CACHED-DATE"]
@@ -8437,29 +8472,35 @@ mod tests {
             assert_eq!(runs[0], run(number, 23.0, true, "#FF0066"));
             assert_eq!(runs[2], run("CACHED-DATE", 13.0, false, "#00AA55"));
             assert_eq!(line, format!("{number}|CACHED-DATE"));
-            let (runs, line) = drawn_text(&rendered, &layout_probe);
+            let (runs, line) = drawn_text(&rendered, None, layout_probe);
             assert_eq!(runs, [run(number, 17.0, false, "#1122CC")]);
             assert_eq!(line, number);
             if index == 1 {
-                let (runs, line) = drawn_text(&rendered, &slide_probe.id);
+                let (runs, line) =
+                    drawn_text(&rendered, Some(&slide_probe.id), slide_probe.source_id);
                 assert_eq!(runs, [run("77", 19.0, false, "#AA5500")]);
                 assert_eq!(line, "77");
             }
         }
     }
 
-    fn drawn_text(rendered: &RenderedSlide, shape_id: &str) -> (Vec<TextRun>, String) {
+    fn drawn_text(
+        rendered: &RenderedSlide,
+        shape_id: Option<&str>,
+        object_id: u32,
+    ) -> (Vec<TextRun>, String) {
         rendered
             .display_list
             .primitives
             .iter()
             .find_map(|primitive| match primitive {
                 Primitive::TextBox {
-                    shape_id: Some(id),
+                    shape_id: drawn,
+                    object_id: drawn_object,
                     paragraphs,
                     lines,
                     ..
-                } if id == shape_id => Some((
+                } if drawn.as_deref() == shape_id && *drawn_object == object_id => Some((
                     paragraphs
                         .iter()
                         .flat_map(|paragraph| paragraph.runs.iter().cloned())
@@ -8471,7 +8512,7 @@ mod tests {
                 )),
                 _ => None,
             })
-            .unwrap_or_else(|| panic!("{shape_id} was not drawn"))
+            .unwrap_or_else(|| panic!("{shape_id:?} {object_id} was not drawn"))
     }
 
     #[test]
@@ -8519,6 +8560,52 @@ mod tests {
     }
 
     #[test]
+    fn layout_decoration_is_painted_but_never_hit() {
+        let mut package = pptx_parse::parse_pptx(FIXTURE).unwrap();
+        let session = DeckSession::open(FIXTURE, 8_303).unwrap();
+        let snapshot = session.snapshot().unwrap();
+        let mut rule = package.slides[0]
+            .shapes
+            .iter()
+            .find_map(|node| match node {
+                ShapeNode::Shape(shape) => Some(shape.clone()),
+                _ => None,
+            })
+            .unwrap();
+        rule.base.id = 9_003;
+        rule.base.placeholder = None;
+        rule.base.transform = ShapeTransform {
+            x: 11_000_000,
+            y: 6_600_000,
+            width: 1_000_000,
+            height: 19_050,
+            ..ShapeTransform::default()
+        };
+        rule.geometry = "rect".to_owned();
+        rule.text = None;
+        package.layouts[0].shapes.push(ShapeNode::Shape(rule));
+        let rendered = renderer().layout_slide(&package, &snapshot, 0).unwrap();
+        let (x, y) = rendered
+            .display_list
+            .primitives
+            .iter()
+            .find_map(|primitive| match primitive {
+                Primitive::Shape {
+                    object_id: 9_003,
+                    shape_id: None,
+                    x,
+                    y,
+                    w,
+                    h,
+                    ..
+                } => Some((x + w / 2.0, y + h / 2.0)),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(rendered.hit_test(x, y), None);
+    }
+
+    #[test]
     fn hiding_master_shapes_drops_the_layout_decoration_too() {
         let mut package = pptx_parse::parse_pptx(FIXTURE).unwrap();
         let session = DeckSession::open(FIXTURE, 8_301).unwrap();
@@ -8526,18 +8613,23 @@ mod tests {
         package.layouts[0]
             .shapes
             .push(package.slides[0].shapes[0].clone());
+        let layout_id = node_base(package.layouts[0].shapes.last().unwrap()).id;
+        let drew_layout = |slide: &RenderedSlide| {
+            slide.display_list.primitives.iter().any(|primitive| {
+                matches!(primitive, Primitive::Shape { shape_id: None, object_id, .. } if *object_id == layout_id)
+            })
+        };
         let shown = renderer().layout_slide(&package, &snapshot, 0).unwrap();
-        assert!(
-            painted_shape_ids(&shown)
-                .iter()
-                .any(|id| id.starts_with("layout:"))
-        );
+        assert!(drew_layout(&shown));
         package.slides[0].show_master_shapes = false;
         let hidden = renderer().layout_slide(&package, &snapshot, 0).unwrap();
+        assert!(!drew_layout(&hidden));
         assert!(
-            painted_shape_ids(&hidden)
+            hidden
+                .display_list
+                .primitives
                 .iter()
-                .all(|id| !id.starts_with("layout:") && !id.starts_with("master:"))
+                .all(|primitive| primitive_shape_id(primitive).is_some())
         );
         assert_eq!(
             hidden.display_list.background,
@@ -9527,10 +9619,7 @@ mod tests {
         assert_eq!(lines[0].end, 2);
         let x = lines[0].x + 150.0;
         let y = lines[0].y + lines[0].height / 2.0;
-        assert!(matches!(
-            rendered.hit_test(x, y),
-            Some(HitTestResult::Text { position: 1, .. })
-        ));
+        assert_eq!(nearest_caret(lines, x, y), 1);
     }
 
     #[test]
@@ -9570,10 +9659,20 @@ mod tests {
     fn text_columns_hit_test_finds_a_caret_in_column_two() {
         let rendered = text_columns_slide(text_columns_body());
         let lines = text_columns_lines(&rendered);
-        assert!(matches!(
-            rendered.hit_test(110.0, lines[0].y + lines[0].height / 2.0),
-            Some(HitTestResult::Text { position, .. }) if position == lines[2].start
-        ));
+        assert_eq!(
+            nearest_caret(lines, 110.0, lines[0].y + lines[0].height / 2.0),
+            lines[2].start
+        );
+    }
+
+    fn nearest_caret(lines: &[PositionedTextLine], x: f32, y: f32) -> u32 {
+        nearest_line(lines, x, y)
+            .unwrap()
+            .caret_stops
+            .iter()
+            .min_by(|left, right| (left.x - x).abs().total_cmp(&(right.x - x).abs()))
+            .unwrap()
+            .position
     }
 
     #[test]
@@ -9794,16 +9893,16 @@ mod tests {
         assert!(rendered.display_list.primitives.iter().any(|primitive| {
             matches!(primitive, Primitive::TextBox { lines, .. } if lines.iter().flat_map(|line| &line.runs).any(|run| !run.glyphs.is_empty()))
         }));
-        assert!(rendered.display_list.primitives.iter().any(|primitive| {
-            matches!(primitive, Primitive::TextBox { shape_id: Some(id), .. } if id.starts_with("master:"))
-        }));
+        assert!(
+            rendered.display_list.primitives.iter().any(|primitive| {
+                matches!(primitive, Primitive::TextBox { shape_id: None, .. })
+            })
+        );
         let master_index = rendered
             .display_list
             .primitives
             .iter()
-            .position(|primitive| {
-                matches!(primitive, Primitive::Shape { shape_id: Some(id), .. } if id.starts_with("master:"))
-            })
+            .position(|primitive| matches!(primitive, Primitive::Shape { shape_id: None, .. }))
             .unwrap();
         let slide_index = rendered
             .display_list
@@ -11375,17 +11474,25 @@ mod tests {
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
-    fn assert_style_colours(rendered: &RenderedSlide, prefix: &str, expected: &[(&str, &str)]) {
+    fn assert_style_colours(
+        rendered: &RenderedSlide,
+        prefix: Option<&str>,
+        expected: &[(&str, &str)],
+    ) {
         let mut paragraphs = Vec::new();
         let mut positioned = Vec::new();
         for primitive in &rendered.display_list.primitives {
             if let Primitive::TextBox {
-                shape_id: Some(id),
+                shape_id,
                 paragraphs: text,
                 lines,
                 ..
             } = primitive
-                && id.starts_with(prefix)
+                && match (shape_id, prefix) {
+                    (Some(id), Some(prefix)) => id.starts_with(prefix),
+                    (None, None) => true,
+                    _ => false,
+                }
             {
                 paragraphs.extend(text.iter().flat_map(|paragraph| {
                     paragraph
@@ -11415,7 +11522,7 @@ mod tests {
             .unwrap();
         assert_style_colours(
             &layout_placeholder,
-            "slide:",
+            Some("slide:"),
             &[("layout title 0070C0", "#0070C0")],
         );
         let master_placeholder = renderer
@@ -11423,7 +11530,7 @@ mod tests {
             .unwrap();
         assert_style_colours(
             &master_placeholder,
-            "slide:",
+            Some("slide:"),
             &[
                 ("master placeholder", "#7030A0"),
                 ("paragraph default", "#0070C0"),
@@ -11440,17 +11547,20 @@ mod tests {
         let first_theme = renderer
             .layout_slide(session.package(), &snapshot, 0)
             .unwrap();
-        assert_style_colours(&first_theme, "slide:", &[("fontRef lt1", "#EEEEEE")]);
+        assert_style_colours(&first_theme, Some("slide:"), &[("fontRef lt1", "#EEEEEE")]);
         let second_theme = renderer
             .layout_slide(session.package(), &snapshot, 8)
             .unwrap();
-        for (prefix, expected) in [
-            ("slide:", ("second theme", "#123456")),
-            ("layout:", ("layout theme", "#234567")),
-            ("master:", ("master theme", "#345678")),
-        ] {
-            assert_style_colours(&second_theme, prefix, &[expected]);
-        }
+        assert_style_colours(
+            &second_theme,
+            Some("slide:"),
+            &[("second theme", "#123456")],
+        );
+        assert_style_colours(
+            &second_theme,
+            None,
+            &[("master theme", "#345678"), ("layout theme", "#234567")],
+        );
     }
 
     fn end(kind: &str, width: Option<&str>, length: Option<&str>) -> LineEnd {
