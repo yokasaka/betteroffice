@@ -106,7 +106,8 @@ fn fixture_with_master(shape: &str, layout: &str, master: &str) -> Vec<u8> {
     ooxml_opc::rezip_parts(&parts).unwrap()
 }
 
-fn rendered_shadow(bytes: &[u8], prefix: &str) -> Option<Shadow> {
+/// `prefix` names a slide object; `None` finds the inherited decoration with the fixture's id.
+fn rendered_shadow(bytes: &[u8], prefix: Option<&str>) -> Option<Shadow> {
     let session = DeckSession::open(bytes, 37).unwrap();
     let list = SlideRenderer::new()
         .layout_slide(session.package(), &session.snapshot().unwrap(), 0)
@@ -116,15 +117,24 @@ fn rendered_shadow(bytes: &[u8], prefix: &str) -> Option<Shadow> {
         .into_iter()
         .find_map(|primitive| match primitive {
             Primitive::Shape {
-                shape_id: Some(id),
+                object_id,
+                shape_id,
                 shadow,
                 ..
             }
             | Primitive::Image {
-                shape_id: Some(id),
+                object_id,
+                shape_id,
                 shadow,
                 ..
-            } if id.starts_with(prefix) => Some(shadow),
+            } if match (shape_id.as_deref(), prefix) {
+                (Some(id), Some(prefix)) => id.starts_with(prefix),
+                (None, None) => object_id == 2,
+                _ => false,
+            } =>
+            {
+                Some(shadow)
+            }
             _ => None,
         })
         .expect("styled object is drawn")
@@ -134,7 +144,7 @@ fn rendered_shadow(bytes: &[u8], prefix: &str) -> Option<Shadow> {
 fn theme_effect_refs_resolve_shadows_for_shapes_connectors_and_pictures() {
     for kind in ["sp", "cxnSp", "pic"] {
         let bytes = fixture(&shape(kind, 2, ""), LAYOUT);
-        let shadow = rendered_shadow(&bytes, "slide:").unwrap();
+        let shadow = rendered_shadow(&bytes, Some("slide:")).unwrap();
         assert_eq!(shadow.color, "#00000061", "{kind}");
         assert!((shadow.blur - 8.0).abs() < 0.01, "{kind}");
         assert!(shadow.dx.abs() < 0.01, "{kind}");
@@ -148,7 +158,7 @@ fn theme_effect_refs_respect_empty_lists_and_zero_or_missing_indices() {
         for (index, effects) in [(2, "<a:effectLst/>"), (0, ""), (1, ""), (4, "")] {
             let bytes = fixture(&shape(kind, index, effects), LAYOUT);
             assert_eq!(
-                rendered_shadow(&bytes, "slide:"),
+                rendered_shadow(&bytes, Some("slide:")),
                 None,
                 "{kind}, {index}, {effects}"
             );
@@ -160,7 +170,7 @@ fn theme_effect_refs_respect_empty_lists_and_zero_or_missing_indices() {
 fn theme_effect_refs_substitute_the_reference_color_for_ph_clr() {
     for kind in ["sp", "cxnSp", "pic"] {
         let bytes = fixture(&shape(kind, 3, ""), LAYOUT);
-        let shadow = rendered_shadow(&bytes, "slide:").unwrap();
+        let shadow = rendered_shadow(&bytes, Some("slide:")).unwrap();
         assert_eq!(shadow.color, "#2468AC80", "{kind}");
         assert!((shadow.blur - 4.0).abs() < 0.01, "{kind}");
         assert!((shadow.dx - 8.0).abs() < 0.01, "{kind}");
@@ -174,7 +184,7 @@ fn theme_effect_refs_resolve_on_layout_decorations() {
         let layout = LAYOUT.replace("</p:spTree>", &format!("{}</p:spTree>", shape(kind, 2, "")));
         let bytes = fixture("", &layout);
         assert_eq!(
-            rendered_shadow(&bytes, "layout:").unwrap().color,
+            rendered_shadow(&bytes, None).unwrap().color,
             "#00000061",
             "{kind}"
         );
@@ -226,7 +236,7 @@ fn theme_effect_refs_follow_explicit_and_placeholder_effects() {
             &format!("{}</p:spTree>", placeholder(3, master_effects)),
         );
         let bytes = fixture_with_master(&placeholder(2, own), &layout, &master);
-        let shadow = rendered_shadow(&bytes, "slide:");
+        let shadow = rendered_shadow(&bytes, Some("slide:"));
         assert_eq!(
             shadow.as_ref().map(|shadow| shadow.color.as_str()),
             expected,
