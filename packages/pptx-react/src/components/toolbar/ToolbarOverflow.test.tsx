@@ -499,4 +499,44 @@ describe('PPTX toolbar overflow', () => {
     expect(document.activeElement).toBe(more());
     expect(menu.isConnected).toBe(false);
   });
+
+  test('opens the color picker of a hidden color control, as the control itself does', async () => {
+    railWidth = 1000;
+    const harness = testBinding();
+    const controller = createPptxCommandController();
+    controller.attach(harness.binding);
+    render(
+      <PptxCommandProvider commands={controller.store}>
+        <EditorToolbar mode="commands">
+          <EditorToolbar.Toolbar>
+            <ToolbarGroup label="Text">
+              <ToolbarCommandButton id="bold" />
+            </ToolbarGroup>
+            <ToolbarGroup label="Shape">
+              <ToolbarCommand id="shapeFill" />
+            </ToolbarGroup>
+          </EditorToolbar.Toolbar>
+        </EditorToolbar>
+      </PptxCommandProvider>
+    );
+    resize(40);
+    const picker = screen().getByTestId('pptx-toolbar-more-color') as HTMLInputElement;
+    const opened: string[] = [];
+    picker.showPicker = () => {
+      opened.push(picker.value);
+    };
+    openMenu();
+    key(document.activeElement!, 'ArrowDown');
+    key(document.activeElement!, 'ArrowRight');
+    const colors = screen().getByRole('menu', { name: 'Fill color' });
+    expect(items(colors).map((item) => item.dataset.label)).toEqual(['No fill', 'Custom color…']);
+    const choose = items(colors)[1];
+    act(() => choose.focus());
+    key(choose, 'Enter');
+    expect(screen().queryByRole('dialog')).toBeNull();
+    expect(opened).toEqual(['#d9eaf7']);
+    fireEvent.change(picker, { target: { value: '#ff0000' } });
+    await settle();
+    expect(harness.calls).toEqual([{ id: 'shapeFill', args: { color: '#ff0000' } }]);
+  });
 });
