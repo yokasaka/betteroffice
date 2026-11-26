@@ -18,6 +18,13 @@ export interface OverflowPrompt {
   submit(value: string): void;
 }
 
+/** A color an overflow action asks for in the browser's color picker. */
+export interface OverflowColorRequest {
+  /** The color the picker opens on, as `#rrggbb`. */
+  value: string;
+  pick(color: string): void;
+}
+
 export interface OverflowRegistry {
   register(source: OverflowSource): () => void;
   /** Whether the menu currently holds hidden controls. */
@@ -26,6 +33,8 @@ export interface OverflowRegistry {
   changed(): void;
   /** Asks for a value in an accessible dialog, then returns focus to the menu button. */
   prompt(request: OverflowPrompt): void;
+  /** Opens the color picker a hidden color control would open. */
+  pickColor(request: OverflowColorRequest): void;
   /** The "More" button, where popups of hidden controls open. */
   anchor(): HTMLElement | null;
 }

@@ -33,6 +33,7 @@ import {
   ToolbarOverflowContext,
   useOverflowRegistry,
   useOverflowSource,
+  type OverflowColorRequest,
   type OverflowPrompt,
   type OverflowRegistry,
   type OverflowSource,
@@ -74,6 +75,8 @@ export function ToolbarRail({ children, className, style, testId }: ToolbarRailP
   const [focusMore, setFocusMore] = useState(false);
   const [prompt, setPrompt] = useState<OverflowPrompt | null>(null);
   const overflowing = useRef(false);
+  const colorRef = useRef<HTMLInputElement>(null);
+  const colorRequest = useRef<OverflowColorRequest | null>(null);
 
   const registry = useMemo<OverflowRegistry>(
     () => ({
@@ -90,6 +93,14 @@ export function ToolbarRail({ children, className, style, testId }: ToolbarRailP
         if (overflowing.current) rerender();
       },
       prompt: setPrompt,
+      pickColor(request) {
+        const input = colorRef.current;
+        if (!input) return;
+        colorRequest.current = request;
+        input.value = request.value;
+        if (typeof input.showPicker === 'function') input.showPicker();
+        else input.click();
+      },
       anchor: () => moreRef.current?.querySelector('button') ?? null,
     }),
     []
@@ -192,6 +203,28 @@ export function ToolbarRail({ children, className, style, testId }: ToolbarRailP
             testId="pptx-toolbar-more"
             onItemSelected={(modality) => {
               if (modality === 'pointer') pptxCommandController(store)?.focusEditor();
+            }}
+          />
+        </span>
+      )}
+      {hidden.length > 0 && (
+        // The picker of a hidden color control opens here, over the More button.
+        <span style={{ position: 'relative', flex: '0 0 auto', width: 0, height: 28 }}>
+          <input
+            ref={colorRef}
+            type="color"
+            tabIndex={-1}
+            aria-hidden="true"
+            data-testid="pptx-toolbar-more-color"
+            onChange={(event) => colorRequest.current?.pick(event.target.value)}
+            style={{
+              position: 'absolute',
+              top: 0,
+              right: 0,
+              width: 28,
+              height: 28,
+              opacity: 0,
+              pointerEvents: 'none',
             }}
           />
         </span>

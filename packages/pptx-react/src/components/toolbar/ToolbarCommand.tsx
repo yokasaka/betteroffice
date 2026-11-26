@@ -32,7 +32,12 @@ import {
   ToolbarMenuItem,
 } from '../ui/ToolbarPrimitives';
 import { runFromControl } from './activation';
-import { ToolbarOverflowContext, useOverflowSource, type OverflowPrompt } from './overflowRegistry';
+import {
+  ToolbarOverflowContext,
+  useOverflowSource,
+  type OverflowColorRequest,
+  type OverflowPrompt,
+} from './overflowRegistry';
 
 const COMMAND_ICONS: Partial<Record<PptxCommandId, ToolbarIconName>> = {
   bold: 'bold',
@@ -217,6 +222,7 @@ function prepare<K extends PptxCommandId>(store: PptxCommandStore, id: K): PptxP
 /** What overflow presentations need beyond the store. */
 export interface OverflowTools {
   prompt?: (request: OverflowPrompt) => void;
+  pickColor?: (request: OverflowColorRequest) => void;
 }
 
 function commandItem<K extends PptxCommandId>(
@@ -312,6 +318,12 @@ const CLEAR_LABELS: Partial<Record<ColorCommandId, TranslationKey>> = {
   shapeStrokeColor: 'toolbar.noBorder',
 };
 
+const COLOR_FALLBACKS: Record<ColorCommandId, string> = {
+  textColor: '#000000',
+  shapeFill: '#d9eaf7',
+  shapeStrokeColor: '#202124',
+};
+
 function colorArgs(color: string | null): { color: string | null } {
   return { color };
 }
@@ -341,26 +353,19 @@ function colorSubmenu(
       onSelect: () => void store.execute(id, colorArgs(null) as never),
     });
   }
-  if (tools.prompt) {
-    const prompt = tools.prompt;
+  if (tools.pickColor) {
+    const pickColor = tools.pickColor;
     entries.push({
       kind: 'item',
       id: `${id}-custom`,
       label: t('commands.customColor'),
       disabled,
       description,
-      onSelect: () => {
-        const pending = prepare(store, id);
-        prompt({
-          title: label,
-          label: t('commands.hexColor'),
-          placeholder: '#1A73E8',
-          initialValue: current ?? '',
-          valid: (value) => /^#?[0-9a-f]{6}$/i.test(value),
-          submit: (value) =>
-            void pending.execute(colorArgs(`#${value.replace(/^#/, '').toLowerCase()}`) as never),
-        });
-      },
+      onSelect: () =>
+        pickColor({
+          value: current ?? COLOR_FALLBACKS[id],
+          pick: (color) => runFromControl(store, id, colorArgs(color) as never),
+        }),
     });
   }
   return { kind: 'submenu', id, label, disabled, description, entries };
@@ -417,8 +422,13 @@ function useCommandOverflow<K extends PptxCommandId>(
 ): void {
   const store = usePptxCommands();
   const { t } = useTranslation();
-  const prompt = useContext(ToolbarOverflowContext)?.prompt;
-  useOverflowSource(element, () => [commandOverflowEntry(store, t, id, args, { prompt })]);
+  const registry = useContext(ToolbarOverflowContext);
+  useOverflowSource(element, () => [
+    commandOverflowEntry(store, t, id, args, {
+      prompt: registry?.prompt,
+      pickColor: registry?.pickColor,
+    }),
+  ]);
 }
 
 /**
@@ -926,12 +936,6 @@ const COLOR_TEST_IDS: Record<ColorCommandId, string> = {
   textColor: 'pptx-text-color',
   shapeFill: 'pptx-shape-fill',
   shapeStrokeColor: 'pptx-shape-border-color',
-};
-
-const COLOR_FALLBACKS: Record<ColorCommandId, string> = {
-  textColor: '#000000',
-  shapeFill: '#d9eaf7',
-  shapeStrokeColor: '#202124',
 };
 
 function CommandColorPicker({ id }: { id: ColorCommandId }) {
